@@ -179,8 +179,13 @@ jobs:
             --exe $executables[0].FullName `
             --output evidence/portable-launch.json `
             --scenario launch `
-            --cycles 1
+            --cycles 1 `
+            --require-portable
           if ($LASTEXITCODE -ne 0) { throw "Portable launch E2E failed with exit code $LASTEXITCODE" }
+          $evidence = Get-Content -Raw evidence/portable-launch.json | ConvertFrom-Json
+          if ($evidence.portableMode -isnot [bool] -or $evidence.portableMode -ne $true) {
+            throw 'Portable launch evidence did not prove portableMode=true'
+          }
       - name: Upload Portable evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

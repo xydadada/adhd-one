@@ -180,18 +180,25 @@ async function verifyEvidence(readFileImpl, outputPath, step, startedAt) {
         || cycle.cycle !== index + 1
         || cycle.scenario !== step.scenario
         || cycle.passed !== true
+        || typeof cycle.portableMode !== 'boolean'
         || cycle.launchVerified !== true
         || cycle.cleanupVerified !== true
+        || cycle.cleanup !== 'removed'
         || cycle.exitVerified !== true
+        || cycle.finalScopedProcessAuditPassed !== true
         || cycle.cdpClosed !== true
         || cycle.processTreeExited !== true
         || cycle.runtimePidExited !== true
         || !Array.isArray(cycle.remainingPids)
         || cycle.remainingPids.length !== 0) return false;
+      if (step.scenario !== 'force-kill'
+        && (cycle.quitAccepted !== true || cycle.gracefulExitVerified !== true)) return false;
       if (step.scenario === 'force-kill' && cycle.forceKillVerified !== true) return false;
       if (step.scenario === 'workspace-write' && cycle.workspaceWriteVerified !== true) return false;
       return true;
     });
+    const normalExitValid = step.scenario === 'force-kill'
+      || (evidence.quitAccepted === true && evidence.gracefulExitVerified === true);
     if (typeof evidence !== 'object' || evidence === null
       || evidence.schemaVersion !== 1
       || evidence.tool !== 'adhd-one-packaged-e2e'
@@ -199,9 +206,12 @@ async function verifyEvidence(readFileImpl, outputPath, step, startedAt) {
       || generatedAt < startedAt - 5_000
       || evidence.passed !== true
       || evidence.scenario !== step.scenario
+      || typeof evidence.portableMode !== 'boolean'
       || evidence.launchVerified !== true
       || evidence.exitVerified !== true
       || evidence.cleanupVerified !== true
+      || evidence.finalScopedProcessAuditPassed !== true
+      || !normalExitValid
       || evidence.cyclesRequested !== step.cycles
       || evidence.cyclesCompleted !== step.cycles
       || !cyclesValid) {

@@ -16,6 +16,8 @@ describe('Windows verification workflow', () => {
     expect(workflow).toMatch(/portable-e2e:\s+needs: build-windows/u);
     expect(workflow).toContain('adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}');
     expect(workflow).toContain('adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}');
+    expect(workflow).toContain('--require-portable');
+    expect(workflow).toContain('portableMode=true');
   });
 
   it('fails the final gate unless every producer and E2E job succeeds', async () => {

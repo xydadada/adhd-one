@@ -20,7 +20,13 @@ function argumentValue(args: string[], name: string) {
   return args[args.indexOf(name) + 1];
 }
 
-function fakeSpawnFactory(calls: Array<{ command: string; args: string[]; options: unknown }>, failingIndex = -1) {
+type EvidenceMutator = (evidence: Record<string, unknown>, cycles: Array<Record<string, unknown>>) => void;
+
+function fakeSpawnFactory(
+  calls: Array<{ command: string; args: string[]; options: unknown }>,
+  failingIndex = -1,
+  mutateEvidence?: EvidenceMutator
+) {
   return (command: string, args: string[], options: unknown) => {
     const callIndex = calls.length;
     calls.push({ command, args: [...args], options });
@@ -31,15 +37,20 @@ function fakeSpawnFactory(calls: Array<{ command: string; args: string[]; option
           const outputPath = argumentValue(args, '--output');
           const scenario = argumentValue(args, '--scenario');
           const cycles = Number(argumentValue(args, '--cycles'));
-          await writeFile(outputPath, `${JSON.stringify({
+          const evidence = {
             schemaVersion: 1,
             tool: 'adhd-one-packaged-e2e',
             generatedAt: new Date().toISOString(),
             passed: true,
             scenario,
+            portableMode: false,
             launchVerified: true,
+            quitAccepted: scenario !== 'force-kill',
+            gracefulExitVerified: scenario !== 'force-kill',
             exitVerified: true,
+            cleanup: 'removed',
             cleanupVerified: true,
+            finalScopedProcessAuditPassed: true,
             forceKillRequested: scenario === 'force-kill',
             forceKillVerified: scenario === 'force-kill',
             workspaceWriteRequested: scenario === 'workspace-write',
@@ -50,8 +61,13 @@ function fakeSpawnFactory(calls: Array<{ command: string; args: string[]; option
               cycle: index + 1,
               scenario,
               passed: true,
+              portableMode: false,
               launchVerified: true,
+              quitAccepted: scenario !== 'force-kill',
+              gracefulExitVerified: scenario !== 'force-kill',
               cleanupVerified: true,
+              cleanup: 'removed',
+              finalScopedProcessAuditPassed: true,
               exitVerified: true,
               cdpClosed: true,
               processTreeExited: true,
@@ -60,7 +76,12 @@ function fakeSpawnFactory(calls: Array<{ command: string; args: string[]; option
               forceKillVerified: scenario === 'force-kill',
               workspaceWriteVerified: scenario === 'workspace-write'
             }))
-          })}\n`, 'utf8');
+          };
+          mutateEvidence?.(
+            evidence as unknown as Record<string, unknown>,
+            evidence.cycles as unknown as Array<Record<string, unknown>>
+          );
+          await writeFile(outputPath, `${JSON.stringify(evidence)}\n`, 'utf8');
         }
         child.emit('close', callIndex === failingIndex ? 17 : 0, null);
       })();
@@ -150,5 +171,130 @@ describe('packaged suite runner', () => {
       evidenceDir,
       spawnImpl
     })).rejects.toMatchObject({ code: 'PACKAGED_SUITE_EVIDENCE_INVALID' });
+  });
+
+  const contractNegativeCases: Array<{ name: string; mutate: EvidenceMutator }> = [
+    {
+      name: 'portableMode is omitted',
+      mutate: (evidence, cycles) => {
+        delete evidence.portableMode;
+        cycles.forEach(cycle => delete cycle.portableMode);
+      }
+    },
+    {
+      name: 'quitAccepted is omitted',
+      mutate: (evidence, cycles) => {
+        delete evidence.quitAccepted;
+        cycles.forEach(cycle => delete cycle.quitAccepted);
+      }
+    },
+    {
+      name: 'quitAccepted is false',
+      mutate: (evidence, cycles) => {
+        evidence.quitAccepted = false;
+        cycles.forEach(cycle => { cycle.quitAccepted = false; });
+      }
+    },
+    {
+      name: 'gracefulExitVerified is omitted',
+      mutate: (evidence, cycles) => {
+        delete evidence.gracefulExitVerified;
+        cycles.forEach(cycle => delete cycle.gracefulExitVerified);
+      }
+    },
+    {
+      name: 'gracefulExitVerified is false',
+      mutate: (evidence, cycles) => {
+        evidence.gracefulExitVerified = false;
+        cycles.forEach(cycle => { cycle.gracefulExitVerified = false; });
+      }
+    },
+    {
+      name: 'cleanupVerified is omitted',
+      mutate: (evidence, cycles) => {
+        delete evidence.cleanupVerified;
+        cycles.forEach(cycle => delete cycle.cleanupVerified);
+      }
+    },
+    {
+      name: 'cleanupVerified is false',
+      mutate: (evidence, cycles) => {
+        evidence.cleanupVerified = false;
+        cycles.forEach(cycle => { cycle.cleanupVerified = false; });
+      }
+    },
+    {
+      name: 'cleanup is omitted',
+      mutate: (evidence, cycles) => {
+        delete evidence.cleanup;
+        cycles.forEach(cycle => delete cycle.cleanup);
+      }
+    },
+    {
+      name: 'cleanup is not removed',
+      mutate: (evidence, cycles) => {
+        evidence.cleanup = 'failed';
+        cycles.forEach(cycle => { cycle.cleanup = 'failed'; });
+      }
+    },
+    {
+      name: 'top-level finalScopedProcessAuditPassed is omitted',
+      mutate: (evidence) => {
+        delete evidence.finalScopedProcessAuditPassed;
+      }
+    },
+    {
+      name: 'top-level finalScopedProcessAuditPassed is false',
+      mutate: (evidence) => {
+        evidence.finalScopedProcessAuditPassed = false;
+      }
+    },
+    {
+      name: 'cycle finalScopedProcessAuditPassed is omitted',
+      mutate: (_evidence, cycles) => {
+        cycles.forEach(cycle => delete cycle.finalScopedProcessAuditPassed);
+      }
+    },
+    {
+      name: 'cycle finalScopedProcessAuditPassed is false',
+      mutate: (_evidence, cycles) => {
+        cycles.forEach(cycle => { cycle.finalScopedProcessAuditPassed = false; });
+      }
+    }
+  ];
+
+  it.each(contractNegativeCases)('rejects evidence when $name', async ({ mutate }) => {
+    const evidenceDir = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-suite-contract-test-'));
+    temporaryRoots.push(evidenceDir);
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+
+    await expect(runPackagedSuite({
+      exe: path.join(evidenceDir, 'ADHD One.exe'),
+      evidenceDir,
+      spawnImpl: fakeSpawnFactory(calls, -1, mutate)
+    })).rejects.toMatchObject({ code: 'PACKAGED_SUITE_EVIDENCE_INVALID' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('exempts force-kill from graceful quit evidence requirements', async () => {
+    const evidenceDir = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-suite-force-kill-contract-test-'));
+    temporaryRoots.push(evidenceDir);
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const mutate: EvidenceMutator = (evidence, cycles) => {
+      if (evidence.scenario !== 'force-kill') return;
+      delete evidence.quitAccepted;
+      delete evidence.gracefulExitVerified;
+      cycles.forEach(cycle => {
+        delete cycle.quitAccepted;
+        delete cycle.gracefulExitVerified;
+      });
+    };
+
+    await expect(runPackagedSuite({
+      exe: path.join(evidenceDir, 'ADHD One.exe'),
+      evidenceDir,
+      spawnImpl: fakeSpawnFactory(calls, -1, mutate)
+    })).resolves.toMatchObject({ steps: expect.any(Array) });
+    expect(calls).toHaveLength(4);
   });
 });

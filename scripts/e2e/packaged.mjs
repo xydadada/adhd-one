@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createConnection, createServer, isIP } from 'node:net';
 import { execFile, spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,7 +14,9 @@ const CONTROL_WINDOW_TIMEOUT_MS = 60_000;
 const CDP_TIMEOUT_MS = 30_000;
 const GRACEFUL_EXIT_TIMEOUT_MS = 8_000;
 const FORCE_EXIT_TIMEOUT_MS = 5_000;
+const PROCESS_PATH_AUDIT_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
+const TEMP_ROOT_PREFIX = 'adhd-one-packaged-e2e-';
 
 const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write']);
 const EVIDENCE_CLEANUP_STATES = new Set(['pending', 'removed', 'failed', 'not-created']);
@@ -27,7 +29,7 @@ const SAFE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const TRUSTED_ERROR_CODE_PREFIXES = [
   'APP_', 'APPLICATION_', 'RUNTIME_', 'CONTROL_', 'HOST_', 'CDP_', 'E2E_',
   'LOOPBACK_', 'PROCESS_', 'EXE_', 'INVALID_', 'NOT_', 'ACCESS_', 'NETWORK_',
-  'WORKSPACE_', 'MOCK_', 'RPC_', 'DSH_'
+  'WORKSPACE_', 'MOCK_', 'RPC_', 'DSH_', 'PORTABLE_', 'CLEANUP_'
 ];
 
 function safeCode(value) {
@@ -162,6 +164,7 @@ function sanitizeCycleEvidence(record, defaultScenario = 'launch') {
     exitMs: nonNegativeInteger(cycle.exitMs),
     pid: safePid(cycle.pid),
     cdpPort: nonNegativeInteger(cycle.cdpPort),
+    portableMode: cycle.portableMode === true,
     controlWindowVerified: cycle.controlWindowVerified === true,
     runtimeReadyVerified: cycle.runtimeReadyVerified === true,
     hostDescribeVerified: cycle.hostDescribeVerified === true,
@@ -170,6 +173,8 @@ function sanitizeCycleEvidence(record, defaultScenario = 'launch') {
     cdpClosed: cycle.cdpClosed === true,
     runtimePidExited: cycle.runtimePidExited === true,
     processTreeExited: cycle.processTreeExited === true,
+    quitAccepted: cycle.quitAccepted === true,
+    gracefulExitVerified: cycle.gracefulExitVerified === true,
     exitVerified: cycle.exitVerified === true,
     processTreeCount: nonNegativeInteger(cycle.processTreeCount, 0),
     remainingPids: Array.isArray(cycle.remainingPids) ? cycle.remainingPids.map(safePid).filter(pid => pid !== undefined) : [],
@@ -179,7 +184,14 @@ function sanitizeCycleEvidence(record, defaultScenario = 'launch') {
     forceKillVerified: scenario === 'force-kill' && cycle.forceKillVerified === true,
     forcedTermination: cycle.forcedTermination === true,
     cleanup: EVIDENCE_CLEANUP_STATES.has(cycle.cleanup) ? cycle.cleanup : 'unknown',
+    cleanupRootExisted: cycle.cleanupRootExisted === true,
+    cleanupRootAbsent: cycle.cleanupRootAbsent === true,
     cleanupVerified: cycle.cleanupVerified === true,
+    finalScopedProcessAuditPassed: cycle.finalScopedProcessAuditPassed === true,
+    finalScopedProcessAuditCount: nonNegativeInteger(cycle.finalScopedProcessAuditCount, 0),
+    finalScopedProcessAuditPids: Array.isArray(cycle.finalScopedProcessAuditPids)
+      ? cycle.finalScopedProcessAuditPids.map(safePid).filter(pid => pid !== undefined)
+      : [],
     errorCode,
     stdoutBytes: nonNegativeInteger(cycle.stdoutBytes, 0),
     stderrBytes: nonNegativeInteger(cycle.stderrBytes, 0),
@@ -197,11 +209,15 @@ export function sanitizeEvidence(evidence) {
     generatedAt: safeTimestamp(evidence?.generatedAt),
     executable: safeExecutableName(evidence?.executable),
     scenario,
+    portableMode: evidence?.portableMode === true,
     launchVerified: evidence?.launchVerified === true,
     forceKillRequested: scenario === 'force-kill',
     forceKillVerified: scenario === 'force-kill' && evidence?.forceKillVerified === true,
+    quitAccepted: evidence?.quitAccepted === true,
+    gracefulExitVerified: evidence?.gracefulExitVerified === true,
     exitVerified: evidence?.exitVerified === true,
     cleanupVerified: evidence?.cleanupVerified === true,
+    finalScopedProcessAuditPassed: evidence?.finalScopedProcessAuditPassed === true,
     workspaceWriteRequested: scenario === 'workspace-write',
     workspaceWriteVerified: scenario === 'workspace-write' && evidence?.workspaceWriteVerified === true,
     cyclesRequested: nonNegativeInteger(evidence?.cyclesRequested, cycles.length),
@@ -218,14 +234,14 @@ function countStreamBytes(stats, chunk) {
 function usage() {
   return [
     'Usage:',
-    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write>]',
+    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write>] [--require-portable]',
     '',
     'The executable must be the installed or extracted ADHD One application executable, not the NSIS installer.'
   ].join('\n');
 }
 
 function parseArgs(argv) {
-  const values = { exe: undefined, output: undefined, cycles: 1, scenario: 'launch' };
+  const values = { exe: undefined, output: undefined, cycles: 1, scenario: 'launch', requirePortable: false };
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
@@ -237,9 +253,16 @@ function parseArgs(argv) {
     const equal = token.indexOf('=');
     const name = equal >= 0 ? token.slice(0, equal) : token;
     let value = equal >= 0 ? token.slice(equal + 1) : undefined;
-    if (name !== '--exe' && name !== '--output' && name !== '--cycles' && name !== '--scenario') throw new Error(`Unknown argument: ${token}`);
+    if (name !== '--exe' && name !== '--output' && name !== '--cycles' && name !== '--scenario' && name !== '--require-portable') {
+      throw new Error(`Unknown argument: ${token}`);
+    }
     if (seen.has(name)) throw new Error(`Duplicate argument: ${name}`);
     seen.add(name);
+    if (name === '--require-portable') {
+      if (equal >= 0) throw new Error('--require-portable does not accept a value');
+      values.requirePortable = true;
+      continue;
+    }
     if (value === undefined) {
       value = argv[index + 1];
       index += 1;
@@ -678,11 +701,16 @@ export function shouldCopyPortableEntry(sourceRoot, source) {
 }
 
 async function windowsProcesses() {
-  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate | ConvertTo-Json -Compress";
+  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress";
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   const value = JSON.parse(stdout);
   return (Array.isArray(value) ? value : [value]).map(item => ({
-    pid: Number(item.ProcessId), parentPid: Number(item.ParentProcessId), name: String(item.Name ?? ''), created: String(item.CreationDate ?? '')
+    pid: Number(item.ProcessId),
+    parentPid: Number(item.ParentProcessId),
+    name: String(item.Name ?? ''),
+    executablePath: String(item.ExecutablePath ?? ''),
+    commandLine: String(item.CommandLine ?? ''),
+    created: String(item.CreationDate ?? '')
   }));
 }
 
@@ -697,6 +725,115 @@ function processTree(processes, rootPid) {
     }
   }
   return [...selected.values()];
+}
+
+function normalizedWindowsPath(value) {
+  const text = String(value ?? '').trim().replace(/^['"]|['"]$/gu, '').replace(/\//gu, '\\');
+  if (!text) return '';
+  return path.win32.normalize(text).replace(/[\\]+$/u, '').toLowerCase();
+}
+
+function normalizedWindowsText(value) {
+  return String(value ?? '').replace(/\//gu, '\\').toLowerCase();
+}
+
+function pathIsWithin(root, candidate) {
+  const normalizedRoot = normalizedWindowsPath(root);
+  const normalizedCandidate = normalizedWindowsPath(candidate);
+  return Boolean(normalizedRoot && normalizedCandidate
+    && (normalizedRoot === normalizedCandidate || normalizedCandidate.startsWith(`${normalizedRoot}\\`)));
+}
+
+function commandLineReferences(commandLine, candidate) {
+  const normalizedCandidate = normalizedWindowsPath(candidate);
+  return Boolean(normalizedCandidate && normalizedWindowsText(commandLine).includes(normalizedCandidate));
+}
+
+function processCreationTime(value) {
+  const text = String(value ?? '').trim();
+  const wmi = text.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d{1,6})([+-]\d{3})?$/u);
+  if (wmi) {
+    const utc = Date.UTC(Number(wmi[1]), Number(wmi[2]) - 1, Number(wmi[3]), Number(wmi[4]), Number(wmi[5]), Number(wmi[6]), Number(wmi[7].padEnd(3, '0').slice(0, 3)));
+    const offsetMinutes = Number(wmi[8] ?? 0);
+    return Number.isFinite(utc) ? utc - offsetMinutes * 60_000 : undefined;
+  }
+  const serialized = text.match(/^\\?\/Date\((\d+)(?:[+-]\d+)?\)\\?\/$/u);
+  if (serialized) return Number(serialized[1]);
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function processStartedDuringCycle(item, startedAt) {
+  const createdAt = processCreationTime(item?.created);
+  return createdAt !== undefined && createdAt >= startedAt - FORCE_EXIT_TIMEOUT_MS;
+}
+
+function sameProcessIdentity(item, expected) {
+  if (!item || !expected || safePid(item.pid) !== safePid(expected.pid)) return false;
+  const actualCreated = String(item.created ?? '');
+  const expectedCreated = String(expected.created ?? '');
+  return actualCreated === expectedCreated && (actualCreated.length > 0 || expectedCreated.length > 0);
+}
+
+function hasKnownProcessAncestor(item, currentByPid, knownByPid, knownPids, startedAt) {
+  let parentPid = safePid(item?.parentPid);
+  const visited = new Set();
+  while (parentPid && !visited.has(parentPid)) {
+    visited.add(parentPid);
+    const parent = currentByPid.get(parentPid);
+    if (parent) {
+      const known = knownByPid.get(parent.pid);
+      if (known && sameProcessIdentity(parent, known)) return true;
+      parentPid = safePid(parent.parentPid);
+      continue;
+    }
+    return knownPids.has(parentPid) && processStartedDuringCycle(item, startedAt);
+  }
+  return false;
+}
+
+function isScopedProcess(item, currentByPid, scope) {
+  const known = scope.knownByPid.get(item.pid);
+  if (known && sameProcessIdentity(item, known)) return true;
+  if (hasKnownProcessAncestor(item, currentByPid, scope.knownByPid, scope.knownPids, scope.startedAt)) return true;
+  if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath) || commandLineReferences(item.commandLine, root))) return true;
+  if (!processStartedDuringCycle(item, scope.startedAt)) return false;
+  return scope.executablePaths.some(executablePath =>
+    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath)
+      || commandLineReferences(item.commandLine, executablePath));
+}
+
+async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots }) {
+  const knownByPid = new Map((knownProcesses ?? []).filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
+  const knownPids = new Set(knownByPid.keys());
+  if (safePid(rootPid)) knownPids.add(rootPid);
+  const scope = {
+    startedAt,
+    knownByPid,
+    knownPids,
+    executablePaths: [...new Set((executablePaths ?? []).filter(value => typeof value === 'string' && value.length > 0))],
+    tempRoots: [...new Set((tempRoots ?? []).filter(value => typeof value === 'string' && value.length > 0))]
+  };
+  const deadline = Date.now() + PROCESS_PATH_AUDIT_TIMEOUT_MS;
+  let lastMatches = [];
+  try {
+    while (true) {
+      const processes = await windowsProcesses();
+      const currentByPid = new Map(processes.filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
+      lastMatches = processes.filter(item => safePid(item?.pid) && isScopedProcess(item, currentByPid, scope));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return { verified: lastMatches.length === 0, pids: lastMatches.map(item => item.pid) };
+      }
+      await delay(Math.min(POLL_INTERVAL_MS, remaining));
+    }
+  } catch (error) {
+    return {
+      verified: false,
+      pids: lastMatches.map(item => item.pid),
+      errorCode: stableStageErrorCode(error, 'PROCESS_PATH_AUDIT_FAILED', 'PROCESS_PATH_AUDIT_TIMEOUT')
+    };
+  }
 }
 
 async function waitForProcessesGone(expected) {
@@ -729,7 +866,7 @@ export async function cdpClosed(port) {
 
 async function forceKillApplication(child, exitPromise) {
   const pid = safePid(child?.pid);
-  if (!pid) return { forcedTermination: false, forceKillVerified: false };
+  if (!pid) return { forcedTermination: false, forceKillVerified: false, quitAccepted: false, gracefulExitVerified: false };
   let taskkillIssued = false;
   try {
     await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
@@ -744,7 +881,9 @@ async function forceKillApplication(child, exitPromise) {
   const exited = await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
   return {
     forcedTermination: taskkillIssued,
-    forceKillVerified: taskkillIssued && exited
+    forceKillVerified: taskkillIssued && exited,
+    quitAccepted: false,
+    gracefulExitVerified: false
   };
 }
 
@@ -758,15 +897,18 @@ async function terminateApplication(child, exitPromise, browser, control, scenar
     } catch { /* The renderer may disappear after accepting quit. */ }
     if (!quitAccepted && control && !control.isClosed()) await delay(200);
   }
-  if (await exitedWithin(exitPromise, GRACEFUL_EXIT_TIMEOUT_MS)) return { forcedTermination: false, forceKillVerified: false, quitAccepted };
+  const gracefulExitVerified = quitAccepted && await exitedWithin(exitPromise, GRACEFUL_EXIT_TIMEOUT_MS);
+  if (gracefulExitVerified) {
+    return { forcedTermination: false, forceKillVerified: false, quitAccepted, gracefulExitVerified };
+  }
   let forceKilled = false;
   try { forceKilled = child.kill('SIGKILL'); } catch { forceKilled = false; }
   await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
-  return { forcedTermination: forceKilled, forceKillVerified: false, quitAccepted };
+  return { forcedTermination: forceKilled, forceKillVerified: false, quitAccepted, gracefulExitVerified: false };
 }
 
 async function prepareRun() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-packaged-e2e-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), TEMP_ROOT_PREFIX));
   try {
     const appData = path.join(root, 'appdata');
     const localAppData = path.join(root, 'localappdata');
@@ -783,6 +925,66 @@ async function prepareRun() {
     await writeFile(path.join(appData, 'ADHD One', 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
     return { root, appData, localAppData, userData, profile, temp, workspace, settings };
   } catch (error) { await rm(root, { recursive: true, force: true }).catch(() => undefined); throw error; }
+}
+
+function isExpectedTempRoot(root) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTemp = path.resolve(os.tmpdir());
+  return path.dirname(resolvedRoot).toLowerCase() === resolvedTemp.toLowerCase()
+    && path.basename(resolvedRoot).startsWith(TEMP_ROOT_PREFIX);
+}
+
+async function pathIsAbsent(candidate) {
+  try {
+    await lstat(candidate);
+    return false;
+  } catch (error) {
+    return isRecord(error) && error.code === 'ENOENT';
+  }
+}
+
+async function cleanupPreparedRoot(prepared, record) {
+  if (!isExpectedTempRoot(prepared.root)) {
+    record.cleanup = 'failed';
+    record.errorCode ??= 'CLEANUP_ROOT_UNEXPECTED';
+    return;
+  }
+  let rootInfo;
+  try {
+    rootInfo = await lstat(prepared.root);
+  } catch (error) {
+    record.cleanup = 'failed';
+    record.errorCode ??= isRecord(error) && error.code === 'ENOENT'
+      ? 'CLEANUP_ROOT_MISSING_BEFORE_RM'
+      : stableStageErrorCode(error, 'CLEANUP_ROOT_STAT_FAILED', 'CLEANUP_ROOT_STAT_TIMEOUT');
+    return;
+  }
+  record.cleanupRootExisted = rootInfo.isDirectory() && !rootInfo.isSymbolicLink();
+  if (!record.cleanupRootExisted) {
+    record.cleanup = 'failed';
+    record.errorCode ??= 'CLEANUP_ROOT_NOT_DIRECTORY';
+    return;
+  }
+
+  let lastError;
+  for (let attempt = 0; attempt < 3 && !record.cleanupRootAbsent; attempt += 1) {
+    try {
+      await rm(prepared.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    } catch (error) {
+      lastError = error;
+    }
+    record.cleanupRootAbsent = await pathIsAbsent(prepared.root);
+    if (!record.cleanupRootAbsent && attempt < 2) await delay(250);
+  }
+  if (record.cleanupRootExisted && record.cleanupRootAbsent) {
+    record.cleanup = 'removed';
+    record.cleanupVerified = true;
+    return;
+  }
+  record.cleanup = 'failed';
+  record.errorCode ??= lastError
+    ? stableStageErrorCode(lastError, 'CLEANUP_FAILED', 'CLEANUP_TIMEOUT')
+    : 'CLEANUP_ROOT_REMAINS';
 }
 
 async function verifyFilesystemIsolation(prepared, launchExecutable, portableMode, workspace) {
@@ -978,6 +1180,10 @@ async function runWorkspaceWrite(executable, prepared, snapshot, cycle, mock, ap
 function cycleFailureCode(record) {
   if (record.scenario === 'force-kill' && record.forceKillRequested && !record.forceKillVerified) return 'APPLICATION_FORCE_KILL_FAILED';
   if (record.scenario === 'workspace-write' && !record.workspaceWriteVerified) return 'WORKSPACE_WRITE_FAILED';
+  if (record.scenario !== 'force-kill' && !record.quitAccepted) return 'APP_QUIT_NOT_ACCEPTED';
+  if (record.scenario !== 'force-kill' && !record.gracefulExitVerified) return 'APPLICATION_GRACEFUL_EXIT_FAILED';
+  if (!record.finalScopedProcessAuditPassed) return 'PROCESS_PATH_AUDIT_FAILED';
+  if (!record.cleanupVerified) return 'CLEANUP_FAILED';
   if (record.forcedTermination) return 'APPLICATION_DID_NOT_EXIT_GRACEFULLY';
   if (record.exitSignal) return 'APPLICATION_EXITED_BY_SIGNAL';
   if (record.exitCode !== undefined && record.exitCode !== null && record.exitCode !== 0) return `APPLICATION_EXIT_CODE_${record.exitCode}`;
@@ -987,7 +1193,7 @@ function cycleFailureCode(record) {
   return 'E2E_CYCLE_FAILED';
 }
 
-async function runCycle(executable, cycle, chromium, scenario = 'launch') {
+async function runCycle(executable, cycle, chromium, scenario = 'launch', requirePortable = false) {
   const startedAt = Date.now();
   const record = {
     cycle,
@@ -1000,6 +1206,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
     exitMs: undefined,
     pid: undefined,
     cdpPort: undefined,
+    portableMode: false,
     controlWindowVerified: false,
     runtimeReadyVerified: false,
     hostDescribeVerified: false,
@@ -1008,6 +1215,8 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
     cdpClosed: false,
     runtimePidExited: false,
     processTreeExited: false,
+    quitAccepted: false,
+    gracefulExitVerified: false,
     exitVerified: false,
     processTreeCount: 0,
     remainingPids: [],
@@ -1017,7 +1226,12 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
     forceKillVerified: false,
     forcedTermination: false,
     cleanup: 'pending',
+    cleanupRootExisted: false,
+    cleanupRootAbsent: false,
     cleanupVerified: false,
+    finalScopedProcessAuditPassed: false,
+    finalScopedProcessAuditCount: 0,
+    finalScopedProcessAuditPids: [],
     errorCode: undefined,
     stdoutBytes: 0,
     stderrBytes: 0,
@@ -1050,6 +1264,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
   let mock;
   let fakeApiKey;
   let workspacePlan;
+  let launchExecutable = executable;
   const stdoutStats = { bytes: 0 };
   const stderrStats = { bytes: 0 };
   let launchedTree = [];
@@ -1069,9 +1284,10 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
         toolArguments: workspacePlan.toolArguments
       });
     }
-    let launchExecutable = executable;
     const portableMarker = path.join(path.dirname(executable), 'resources', 'portable.marker');
     const portableMode = await stat(portableMarker).then(value => value.isFile()).catch(() => false);
+    record.portableMode = portableMode;
+    if (requirePortable && !portableMode) throw new Error('PORTABLE_MARKER_MISSING');
     if (portableMode) {
       const sourceRoot = path.dirname(executable);
       const portableRoot = path.join(prepared.root, 'portable-app');
@@ -1082,6 +1298,10 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
         filter: source => shouldCopyPortableEntry(sourceRoot, source)
       });
       launchExecutable = path.join(portableRoot, path.basename(executable));
+      const copiedMarker = path.join(path.dirname(launchExecutable), 'resources', 'portable.marker');
+      if (!await stat(copiedMarker).then(value => value.isFile()).catch(() => false)) {
+        throw new Error('PORTABLE_MARKER_COPY_FAILED');
+      }
       const portableData = path.join(portableRoot, 'portable-data');
       await mkdir(portableData, { recursive: true });
       await writeFile(path.join(portableData, 'settings.json'), `${JSON.stringify(prepared.settings, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
@@ -1151,6 +1371,8 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
       const termination = await terminateApplication(child, exitPromise, browser, control, scenario);
       record.forcedTermination = termination.forcedTermination;
       record.forceKillVerified = termination.forceKillVerified;
+      record.quitAccepted = termination.quitAccepted === true;
+      record.gracefulExitVerified = termination.gracefulExitVerified === true;
       if (record.forcedTermination && termination.quitAccepted === false) record.errorCode ??= 'APP_QUIT_REQUEST_FAILED';
     }
     if (record.forcedTermination && scenario === 'launch') {
@@ -1182,14 +1404,8 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
       }
     }
     if (record.cdpPort) record.cdpClosed = await cdpClosed(record.cdpPort);
-    record.exitVerified = scenario === 'force-kill'
-      ? record.forceKillVerified && record.processTreeExited && record.cdpClosed
-      : !record.forcedTermination && record.exitCode === 0 && !record.exitSignal && record.processTreeExited && record.cdpClosed;
-    record.passed = record.passed && record.launchVerified && record.exitVerified
-      && (scenario !== 'workspace-write' || record.workspaceWriteVerified);
     record.stdoutBytes = stdoutStats.bytes;
     record.stderrBytes = stderrStats.bytes;
-    if (!record.passed) record.errorCode ??= cycleFailureCode(record);
     if (mock) {
       try { await mock.close(); }
       catch (error) {
@@ -1198,21 +1414,38 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
       }
     }
     if (prepared) {
-      try {
-        await rm(prepared.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
-        record.cleanup = 'removed';
-        record.cleanupVerified = true;
-      } catch (error) {
-        record.cleanup = 'failed';
-        record.cleanupVerified = false;
-        record.errorCode ??= stableStageErrorCode(error, 'CLEANUP_FAILED', 'CLEANUP_TIMEOUT');
-        record.passed = false;
-      }
+      await cleanupPreparedRoot(prepared, record);
     } else {
       record.cleanup = 'not-created';
       record.cleanupVerified = false;
     }
-    record.passed = record.passed && record.cleanupVerified;
+    const processAudit = await auditScopedProcesses({
+      startedAt,
+      rootPid: child?.pid,
+      knownProcesses: launchedTree,
+      executablePaths: [executable, launchExecutable],
+      tempRoots: prepared ? [prepared.root] : []
+    });
+    record.finalScopedProcessAuditPassed = processAudit.verified === true;
+    record.finalScopedProcessAuditPids = processAudit.pids;
+    record.finalScopedProcessAuditCount = processAudit.pids.length;
+    record.errorCode ??= processAudit.errorCode;
+    if (!record.finalScopedProcessAuditPassed) record.errorCode ??= 'PROCESS_PATH_AUDIT_FOUND';
+    if (prepared && record.cleanup === 'removed' && !await pathIsAbsent(prepared.root)) {
+      record.cleanupRootAbsent = false;
+      record.cleanup = 'failed';
+      record.cleanupVerified = false;
+      record.errorCode ??= 'CLEANUP_ROOT_REAPPEARED';
+    }
+    record.exitVerified = scenario === 'force-kill'
+      ? record.forceKillVerified && record.processTreeExited && record.cdpClosed && record.finalScopedProcessAuditPassed
+      : record.quitAccepted && record.gracefulExitVerified && !record.forcedTermination
+        && record.exitCode === 0 && !record.exitSignal && record.processTreeExited && record.cdpClosed
+        && record.finalScopedProcessAuditPassed;
+    record.passed = record.passed && record.launchVerified && record.exitVerified && record.cleanupVerified
+      && record.finalScopedProcessAuditPassed
+      && (scenario !== 'workspace-write' || record.workspaceWriteVerified);
+    if (!record.passed) record.errorCode ??= cycleFailureCode(record);
   }
   return record;
 }
@@ -1241,14 +1474,23 @@ async function main() {
   const { chromium } = await import('playwright');
   const cycles = [];
   for (let cycle = 1; cycle <= options.cycles; cycle += 1) {
-    const result = await runCycle(executable, cycle, chromium, options.scenario);
+    const result = await runCycle(executable, cycle, chromium, options.scenario, options.requirePortable);
     cycles.push(result);
     console.log(`packaged E2E cycle ${cycle}/${options.cycles}: ${result.passed ? 'PASS' : 'FAIL'}`);
   }
+  const portableMode = cycles.length === options.cycles && cycles.length > 0 && cycles.every(item => item.portableMode === true);
   const launchVerified = cycles.length === options.cycles && cycles.every(item => item.launchVerified === true);
   const forceKillVerified = options.scenario === 'force-kill' && cycles.length === options.cycles && cycles.every(item => item.forceKillVerified === true);
+  const quitAccepted = options.scenario === 'force-kill'
+    ? false
+    : cycles.length === options.cycles && cycles.every(item => item.quitAccepted === true);
+  const gracefulExitVerified = options.scenario === 'force-kill'
+    ? false
+    : cycles.length === options.cycles && cycles.every(item => item.gracefulExitVerified === true);
   const exitVerified = cycles.length === options.cycles && cycles.every(item => item.exitVerified === true);
   const cleanupVerified = cycles.length === options.cycles && cycles.every(item => item.cleanupVerified === true);
+  const finalScopedProcessAuditPassed = cycles.length === options.cycles
+    && cycles.every(item => item.finalScopedProcessAuditPassed === true);
   const workspaceWriteVerified = options.scenario === 'workspace-write' && cycles.length === options.cycles && cycles.every(item => item.workspaceWriteVerified === true);
   const evidence = sanitizeEvidence({
     schemaVersion: 1,
@@ -1256,11 +1498,15 @@ async function main() {
     generatedAt: new Date().toISOString(),
     executable: path.basename(executable),
     scenario: options.scenario,
+    portableMode,
     launchVerified,
     forceKillRequested: options.scenario === 'force-kill',
     forceKillVerified,
+    quitAccepted,
+    gracefulExitVerified,
     exitVerified,
     cleanupVerified,
+    finalScopedProcessAuditPassed,
     workspaceWriteRequested: options.scenario === 'workspace-write',
     workspaceWriteVerified,
     cyclesRequested: options.cycles,

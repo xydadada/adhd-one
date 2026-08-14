@@ -105,7 +105,11 @@ describe('packaged E2E evidence safety', () => {
   it('keeps workspace-write evidence to booleans and enums', () => {
     const value = sanitizeEvidence({
       scenario: 'workspace-write',
+      portableMode: true,
       workspaceWriteVerified: true,
+      quitAccepted: true,
+      gracefulExitVerified: true,
+      cleanupVerified: true,
       cyclesRequested: 1,
       cyclesCompleted: 1,
       passed: true,
@@ -113,7 +117,13 @@ describe('packaged E2E evidence safety', () => {
         cycle: 1,
         scenario: 'workspace-write',
         passed: true,
+        portableMode: true,
         workspaceWriteVerified: true,
+        quitAccepted: true,
+        gracefulExitVerified: true,
+        cleanup: 'removed',
+        cleanupVerified: true,
+        finalScopedProcessAuditPassed: true,
         workspaceWrite: {
           verified: true,
           rpcClientSource: 'packaged-asar',
@@ -140,6 +150,10 @@ describe('packaged E2E evidence safety', () => {
     });
 
     expect(value.workspaceWriteRequested).toBe(true);
+    expect(value.portableMode).toBe(true);
+    expect(value.quitAccepted).toBe(true);
+    expect(value.gracefulExitVerified).toBe(true);
+    expect(value.cleanupVerified).toBe(true);
     expect(value.workspaceWriteVerified).toBe(true);
     expect(value.cycles[0]?.workspaceWrite).toEqual({
       requested: true,
@@ -158,6 +172,14 @@ describe('packaged E2E evidence safety', () => {
       sentinelFile: true,
       secondProviderTurn: true,
       finalNonce: true
+    });
+    expect(value.cycles[0]).toMatchObject({
+      portableMode: true,
+      quitAccepted: true,
+      gracefulExitVerified: true,
+      cleanup: 'removed',
+      cleanupVerified: true,
+      finalScopedProcessAuditPassed: true
     });
     const serialized = JSON.stringify(value);
     expect(serialized).not.toMatch(/session-must-not-escape|nonce-must-not-escape|private|43123|fake-key-must-not-escape|runtimeUrl|sentinelPath/iu);

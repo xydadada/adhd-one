@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   cdpClosed,
@@ -11,12 +12,12 @@ import {
 
 describe('packaged E2E evidence safety', () => {
   it('never copies existing portable user data into a clean E2E app clone', () => {
-    const root = 'C:\\portable\\ADHD-One';
+    const root = path.resolve('portable-fixture', 'ADHD-One');
     expect(shouldCopyPortableEntry(root, root)).toBe(true);
-    expect(shouldCopyPortableEntry(root, `${root}\\resources\\portable.marker`)).toBe(true);
-    expect(shouldCopyPortableEntry(root, `${root}\\portable-data`)).toBe(false);
-    expect(shouldCopyPortableEntry(root, `${root}\\portable-data\\settings.json`)).toBe(false);
-    expect(shouldCopyPortableEntry(root, `${root}\\portable-data-backup\\settings.json`)).toBe(true);
+    expect(shouldCopyPortableEntry(root, path.join(root, 'resources', 'portable.marker'))).toBe(true);
+    expect(shouldCopyPortableEntry(root, path.join(root, 'portable-data'))).toBe(false);
+    expect(shouldCopyPortableEntry(root, path.join(root, 'portable-data', 'settings.json'))).toBe(false);
+    expect(shouldCopyPortableEntry(root, path.join(root, 'portable-data-backup', 'settings.json'))).toBe(true);
   });
 
   it('keeps only the evidence allowlist and never serializes raw output or paths', () => {

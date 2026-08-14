@@ -522,7 +522,7 @@ jobs:
           }
       - name: Attest release assets
         id: provenance
-        uses: actions/attest@ce27ba3b4a9a139d9a20a4a07d69fabb52f1e5bc
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           # Attest only primary subjects; checksum and verifier files are manifests/sidecars.
           subject-path: |

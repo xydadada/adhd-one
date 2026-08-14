@@ -125,8 +125,10 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $root
           $apps = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'ADHD One.exe')
           if ($apps.Count -ne 1) { throw "Expected exactly one portable executable, found $($apps.Count)" }
-          node scripts/e2e/packaged.mjs --exe $apps[0].FullName --output evidence/release-portable.json --scenario launch --cycles 1
+          node scripts/e2e/packaged.mjs --exe $apps[0].FullName --output evidence/release-portable.json --scenario launch --cycles 1 --require-portable
           if ($LASTEXITCODE -ne 0) { throw 'Release portable E2E failed' }
+      - name: Verify Portable E2E evidence
+        run: npm run verify:evidence -- --portable evidence/release-portable-unpacked.json evidence/release-portable.json
       - name: Upload release E2E evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -838,7 +840,7 @@ jobs:
           }
           $isPrerelease = -not [string]::IsNullOrWhiteSpace([string]$packageSemVer.PreReleaseLabel)
 
-          $arguments = @('release', 'create', $env:GITHUB_REF_NAME, '--verify-tag', '--target', $env:EXPECTED_SHA)
+          $arguments = @('release', 'create', $env:GITHUB_REF_NAME, '--repo', $env:RELEASE_REPOSITORY, '--draft', '--verify-tag', '--target', $env:EXPECTED_SHA)
           if ($isPrerelease) { $arguments += '--prerelease' }
           $arguments += @('--title', "ADHD One $env:GITHUB_REF_NAME", '--notes-file', 'RELEASE_NOTES.md')
           $arguments += $assets
@@ -862,16 +864,32 @@ jobs:
             throw "Published release tag $remoteTag does not match $env:GITHUB_REF_NAME"
           }
           $remoteIsDraft = [bool]$release.isDraft
-          if ($remoteIsDraft) {
-            throw 'Published release must not be a draft'
+          if (-not $remoteIsDraft) {
+            throw 'Release must remain a draft during pre-publication verification'
           }
           $remoteIsPrerelease = [bool]$release.isPrerelease
           if ($remoteIsPrerelease -ne $isPrerelease) {
             throw "Published release prerelease=$remoteIsPrerelease does not match package.json SemVer prerelease=$isPrerelease"
           }
 
+          $releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME"
+          $releaseApiJson = (& gh api $releaseApiPath -H 'Accept: application/vnd.github+json' | Out-String)
+          $releaseApiExitCode = $LASTEXITCODE
+          if ($releaseApiExitCode -ne 0) {
+            throw "GitHub API release lookup failed with exit code $releaseApiExitCode"
+          }
+          try {
+            $releaseApi = $releaseApiJson | ConvertFrom-Json
+          } catch {
+            throw 'GitHub API release lookup returned invalid JSON'
+          }
+          if ([string]$releaseApi.tag_name -ne $env:GITHUB_REF_NAME) {
+            throw "GitHub API release tag $($releaseApi.tag_name) does not match $env:GITHUB_REF_NAME"
+          }
+
           $localAssetNames = @()
           $localAssetSizes = @{}
+          $localAssetDigests = @{}
           $localAssetNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
           foreach ($asset in $assets) {
             $name = [System.IO.Path]::GetFileName($asset)
@@ -880,12 +898,14 @@ jobs:
             }
             $localAssetNames += $name
             $localAssetSizes[$name] = [int64](Get-Item -LiteralPath $asset).Length
+            $localAssetDigests[$name] = "sha256:$((Get-FileHash -Algorithm SHA256 -LiteralPath $asset).Hash.ToLowerInvariant())"
           }
 
           $remoteAssetNames = @()
           $remoteAssetSizes = @{}
+          $remoteAssetDigests = @{}
           $remoteAssetNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-          foreach ($remoteAsset in @($release.assets)) {
+          foreach ($remoteAsset in @($releaseApi.assets)) {
             $name = [string]$remoteAsset.name
             if ([string]::IsNullOrWhiteSpace($name) -or -not $remoteAssetNameSet.Add($name)) {
               throw "Published release contains an invalid or duplicate asset name: $name"
@@ -893,8 +913,16 @@ jobs:
             if ($null -eq $remoteAsset.size) {
               throw "Published release asset has no size: $name"
             }
+            $digest = [string]$remoteAsset.digest
+            if ([string]::IsNullOrWhiteSpace($digest)) {
+              throw "Published release asset has no SHA-256 digest: $name"
+            }
+            if ($digest -notmatch '(?i)^sha256:[0-9a-f]{64}$') {
+              throw "Published release asset has an invalid SHA-256 digest: $name"
+            }
             $remoteAssetNames += $name
             $remoteAssetSizes[$name] = [int64]$remoteAsset.size
+            $remoteAssetDigests[$name] = $digest.ToLowerInvariant()
           }
           if ($remoteAssetNameSet.Count -ne $localAssetNameSet.Count) {
             throw "Published release asset count $($remoteAssetNameSet.Count) does not equal local allowlist count $($localAssetNameSet.Count)"
@@ -906,9 +934,38 @@ jobs:
             if ($remoteAssetSizes[$name] -ne $localAssetSizes[$name]) {
               throw "Published release asset size for $name does not match local size $($localAssetSizes[$name])"
             }
+            if ($remoteAssetDigests[$name] -ne $localAssetDigests[$name]) {
+              throw "Published release asset SHA-256 digest for $name does not match local digest"
+            }
           }
           foreach ($name in $remoteAssetNames) {
             if (-not $localAssetNameSet.Contains($name)) {
               throw "Published release contains unexpected asset: $name"
             }
+          }
+
+          $publishArguments = @('release', 'edit', $env:GITHUB_REF_NAME, '--repo', $env:RELEASE_REPOSITORY, '--draft=false')
+          gh @publishArguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release edit --draft=false failed with exit code $LASTEXITCODE"
+          }
+
+          $finalReleaseViewJson = (& gh release view $env:GITHUB_REF_NAME --repo $env:RELEASE_REPOSITORY --json tagName,isDraft,isPrerelease | Out-String)
+          $finalReleaseViewExitCode = $LASTEXITCODE
+          if ($finalReleaseViewExitCode -ne 0) {
+            throw "Final gh release view failed with exit code $finalReleaseViewExitCode"
+          }
+          try {
+            $finalRelease = $finalReleaseViewJson | ConvertFrom-Json
+          } catch {
+            throw 'Final gh release view returned invalid JSON'
+          }
+          if ([string]$finalRelease.tagName -ne $env:GITHUB_REF_NAME) {
+            throw "Final release tag $($finalRelease.tagName) does not match $env:GITHUB_REF_NAME"
+          }
+          if ($null -eq $finalRelease.isDraft -or [bool]$finalRelease.isDraft -ne $false) {
+            throw 'Final release must not be a draft'
+          }
+          if ($null -eq $finalRelease.isPrerelease -or [bool]$finalRelease.isPrerelease -ne $isPrerelease) {
+            throw "Final release prerelease=$([bool]$finalRelease.isPrerelease) does not match package.json SemVer prerelease=$isPrerelease"
           }

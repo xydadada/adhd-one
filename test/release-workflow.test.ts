@@ -19,18 +19,26 @@ describe('release workflow identity gates', () => {
     expect(workflow).toContain('cannot publish runtime channel=');
   });
 
-  it('verifies release-installed evidence before upload without validating portable evidence', async () => {
+  it('verifies installed and both Portable E2E evidence outputs before upload', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     const installedSuite = workflow.indexOf('      - name: NSIS installed E2E suite and uninstall residue check');
     const verifier = workflow.indexOf('      - name: Verify release installed E2E evidence');
+    const portableVerifier = workflow.indexOf('      - name: Verify Portable E2E evidence');
     const evidenceUpload = workflow.indexOf('      - name: Upload release E2E evidence');
+    const portableUnpackedOutput = workflow.indexOf('--output evidence/release-portable-unpacked.json');
     const portableOutput = workflow.indexOf('--output evidence/release-portable.json');
 
     expect(installedSuite).toBeGreaterThanOrEqual(0);
     expect(verifier).toBeGreaterThan(installedSuite);
+    expect(portableUnpackedOutput).toBeGreaterThanOrEqual(0);
+    expect(portableOutput).toBeGreaterThan(portableUnpackedOutput);
+    expect(portableVerifier).toBeGreaterThan(portableOutput);
     expect(evidenceUpload).toBeGreaterThan(verifier);
+    expect(evidenceUpload).toBeGreaterThan(portableVerifier);
     expect(workflow.match(/npm run verify:evidence -- evidence\/release-installed/gu)).toHaveLength(1);
-    expect(workflow.slice(portableOutput)).not.toContain('npm run verify:evidence');
+    expect(workflow.match(/--require-portable/gu)).toHaveLength(2);
+    expect(workflow).toContain('npm run verify:evidence -- --portable evidence/release-portable-unpacked.json evidence/release-portable.json');
+    expect(workflow).not.toContain('Assert-ExactProperties');
   });
 
   it('labels the final win-unpacked tree as Portable and requires its marker', async () => {
@@ -70,5 +78,36 @@ describe('release workflow identity gates', () => {
     expect(workflow).toContain('$release.isPrerelease');
     expect(workflow).toContain('$remoteAssetNameSet');
     expect(workflow).toContain('$remoteAssetSizes[$name] -ne $localAssetSizes[$name]');
+  });
+
+  it('pins release create and view to RELEASE_REPOSITORY and verifies every remote asset digest', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const createArguments = workflow.indexOf("$arguments = @('release', 'create'");
+    const createCall = workflow.indexOf('gh @arguments', createArguments);
+    const releaseView = workflow.indexOf('gh release view', createCall);
+    const draftCheck = workflow.indexOf('Release must remain a draft during pre-publication verification');
+    const digestCheck = workflow.indexOf('Published release asset SHA-256 digest for $name does not match local digest');
+    const publishArguments = workflow.indexOf("$publishArguments = @('release', 'edit'");
+    const finalReadback = workflow.indexOf('$finalReleaseViewJson', publishArguments);
+
+    expect(createArguments).toBeGreaterThanOrEqual(0);
+    expect(createCall).toBeGreaterThan(createArguments);
+    expect(workflow.slice(createArguments, createCall)).toContain("'--repo', $env:RELEASE_REPOSITORY");
+    expect(workflow.slice(createArguments, createCall)).toContain("'--draft'");
+    expect(releaseView).toBeGreaterThan(createCall);
+    expect(workflow.slice(releaseView, releaseView + 180)).toContain('--repo $env:RELEASE_REPOSITORY');
+    expect(draftCheck).toBeGreaterThan(releaseView);
+    expect(digestCheck).toBeGreaterThan(releaseView);
+    expect(publishArguments).toBeGreaterThan(digestCheck);
+    expect(workflow.slice(publishArguments, finalReadback)).toContain("'--repo', $env:RELEASE_REPOSITORY, '--draft=false'");
+    expect(finalReadback).toBeGreaterThan(publishArguments);
+    expect(workflow).toContain('$releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME"');
+    expect(workflow).toContain('gh api $releaseApiPath -H');
+    expect(workflow).toContain('$remoteAsset.digest');
+    expect(workflow).toContain('$localAssetDigests[$name]');
+    expect(workflow).toContain('Published release asset has no SHA-256 digest');
+    expect(workflow).toContain('Published release asset SHA-256 digest for $name does not match local digest');
+    expect(workflow).toContain('Final release must not be a draft');
+    expect(workflow).toContain('$finalRelease.isPrerelease');
   });
 });

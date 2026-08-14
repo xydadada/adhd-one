@@ -42,6 +42,42 @@ describe('Windows verification workflow', () => {
     expect(portableJob).not.toContain('verify:evidence');
   });
 
+  it('binds latest.yml installer metadata to the exact Setup file', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const assetGate = workflow.slice(
+      workflow.indexOf('      - name: Verify package version and Windows assets'),
+      workflow.indexOf('      - name: Packaged Portable win-unpacked launch smoke'),
+    );
+
+    expect(assetGate).toContain('$setupPath = Join-Path $dist $setupName');
+    expect(assetGate).toContain('$portablePath = Join-Path $dist $portableName');
+    expect(assetGate).toContain('$latestPathMatch');
+    expect(assetGate).toContain('$latestSha512Match');
+    expect(assetGate).toContain('$latestInstallerPath -ne $setupName');
+    expect(assetGate).toContain('[System.IO.File]::OpenRead($setupPath)');
+    expect(assetGate).toContain('$sha512.ComputeHash($setupStream)');
+    expect(assetGate).not.toContain('ReadAllBytes');
+    expect(assetGate).toContain('[Convert]::ToBase64String');
+    expect(assetGate).toContain('$actualSha512 -ne $latestSha512');
+  });
+
+  it('uploads only the exact versioned Setup and Portable paths', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const setupUploadStart = workflow.indexOf('      - name: Upload Setup input');
+    const portableUploadStart = workflow.indexOf('      - name: Upload Portable input');
+    const evidenceUploadStart = workflow.indexOf('      - name: Upload build evidence');
+    const setupUpload = workflow.slice(setupUploadStart, portableUploadStart);
+    const portableUpload = workflow.slice(portableUploadStart, evidenceUploadStart);
+
+    expect(setupUpload).toContain('${{ steps.windows-assets.outputs.setup_path }}');
+    expect(setupUpload).toContain('dist/latest.yml');
+    expect(setupUpload).not.toContain('*');
+    expect(portableUpload).toContain('${{ steps.windows-assets.outputs.portable_path }}');
+    expect(portableUpload).not.toContain('*');
+    expect(workflow).toContain('"setup_path=dist/$setupName"');
+    expect(workflow).toContain('"portable_path=dist/$portableName"');
+  });
+
   it('bounds both the installed job and a stalled NSIS installer', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     const installedJob = workflow.slice(

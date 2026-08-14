@@ -55,6 +55,8 @@ function createBridge() {
   };
   const runtime = {
     restart: vi.fn(async () => undefined),
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
     snapshot: vi.fn(() => ({ state: 'ready', runtimeVersion: '0.1.0', url: 'http://127.0.0.1:43123' }))
   };
   const updates = {
@@ -85,7 +87,7 @@ function createBridge() {
     if (!handler) throw new Error(`missing handler: ${channel}`);
     return handler(eventFor(), value);
   };
-  return { doctor, invoke, quitState, runtime, settings, updates };
+  return { doctor, invoke, quitState, runtime, settings, updates, windows };
 }
 
 async function captureError(operation: () => Promise<unknown>): Promise<Error> {
@@ -125,6 +127,41 @@ describe('privacy-safe IPC bridge', () => {
     quitState.beginQuit();
     expect(quitState.isQuitting()).toBe(true);
     expect(quitState.generation()).toBe(1);
+  });
+
+  it('freezes mutations synchronously when the real app quit handler is invoked', async () => {
+    const { invoke, runtime, windows } = createBridge();
+
+    await expect(invoke('app:quit')).resolves.toEqual({ accepted: true });
+    await expect(invoke('runtime:restart')).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
+    expect(runtime.restart).not.toHaveBeenCalled();
+    expect(windows.quit).not.toHaveBeenCalled();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(windows.quit).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a stale in-flight mutation that completes after quit begins', async () => {
+    const { invoke, quitState, runtime } = createBridge();
+    let finish!: () => void;
+    runtime.restart.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+
+    const restart = invoke('runtime:restart') as Promise<unknown>;
+    await Promise.resolve();
+    quitState.beginQuit();
+    finish();
+
+    await expect(restart).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
+  });
+
+  it('freezes mutations when an app update is accepted for installation', async () => {
+    const { invoke, quitState, runtime, updates } = createBridge();
+
+    await expect(invoke('update:confirm', 'app')).resolves.toBeUndefined();
+
+    expect(updates.quitAndInstall).toHaveBeenCalledOnce();
+    expect(quitState.isQuitting()).toBe(true);
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    await expect(invoke('runtime:restart')).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
   });
 
   it('does not return internal data paths in the app snapshot IPC response', async () => {

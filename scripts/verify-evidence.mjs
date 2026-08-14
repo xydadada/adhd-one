@@ -8,6 +8,7 @@ const PACKAGED_FILES = Object.freeze([
   Object.freeze({ name: 'workspace-write-1.json', scenario: 'workspace-write', cycles: 1 }),
   Object.freeze({ name: 'launch-10.json', scenario: 'launch', cycles: 10 })
 ]);
+const PORTABLE_EVIDENCE_EXPECTATION = Object.freeze({ scenario: 'launch', cycles: 1 });
 const INSTALLED_SUMMARY_FILE = 'installed-summary.json';
 const EVIDENCE_FILE_NAMES = Object.freeze([
   ...PACKAGED_FILES.map(file => file.name),
@@ -130,6 +131,7 @@ const PRODUCTION_ERROR_CODES = new Set([
   'INSTALLED_E2E_INSTALL_MARKER_REMAINED',
   'INSTALLED_E2E_LAYOUT_INVALID',
   'INSTALLED_E2E_PACKAGED_SUITE_FAILED',
+  'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT',
   'INSTALLED_E2E_PREEXISTING_INSTALL',
   'INSTALLED_E2E_PREEXISTING_SHORTCUT',
   'INSTALLED_E2E_PROCESS_AUDIT_FAILED',
@@ -248,12 +250,12 @@ function isNullableProductionErrorCode(value) {
   return value === null || isKnownProductionErrorCode(value);
 }
 
-function validPackagedEvidence(value, expected) {
+function validPackagedEvidence(value, expected, expectedPortableMode = false) {
   if (!hasOnlyKeys(value, TOP_KEYS)) return false;
   if (value.schemaVersion !== 1 || value.tool !== 'adhd-one-packaged-e2e') return false;
   if (typeof value.generatedAt !== 'string' || !ISO_TIMESTAMP.test(value.generatedAt)
     || !Number.isFinite(Date.parse(value.generatedAt))) return false;
-  if (value.executable !== 'ADHD One.exe' || value.portableMode !== false) return false;
+  if (value.executable !== 'ADHD One.exe' || value.portableMode !== expectedPortableMode) return false;
   if (value.scenario !== expected.scenario || !Array.isArray(value.cycles)
     || value.cyclesRequested !== expected.cycles || value.cyclesCompleted !== expected.cycles
     || value.cycles.length !== expected.cycles || value.passed !== true) return false;
@@ -277,12 +279,15 @@ function validPackagedEvidence(value, expected) {
     if (value.quitAccepted !== false || value.gracefulExitVerified !== false) return false;
   } else if (value.quitAccepted !== true || value.gracefulExitVerified !== true) return false;
 
-  return value.cycles.every((cycle, index) => validCycle(cycle, value, expected, index));
+  return value.cycles.every((cycle, index) => validCycle(
+    cycle, value, expected, index, expectedPortableMode
+  ));
 }
 
-function validCycle(cycle, evidence, expected, index) {
+function validCycle(cycle, evidence, expected, index, expectedPortableMode = false) {
   if (!hasOnlyKeys(cycle, CYCLE_KEYS, [...CYCLE_KEYS].filter(key => key !== 'errorCode'))) return false;
-  if (cycle.cycle !== index + 1 || cycle.scenario !== expected.scenario || cycle.portableMode !== false
+  if (cycle.cycle !== index + 1 || cycle.scenario !== expected.scenario
+    || cycle.portableMode !== expectedPortableMode
     || !isBooleanRecord(cycle, CYCLE_BOOLEAN_KEYS)
     || !POSITIVE_CYCLE_NUMBER_KEYS.every(key => isPositiveInteger(cycle[key]))
     || !NON_NEGATIVE_CYCLE_NUMBER_KEYS.every(key => isNonNegativeInteger(cycle[key]))) return false;
@@ -376,8 +381,15 @@ function failure(file, code) {
   return `${file}:${code}`;
 }
 
+function stripWindowsNamespacePrefix(value) {
+  if (process.platform !== 'win32') return value;
+  if (value.startsWith('\\\\?\\UNC\\')) return `\\\\${value.slice(8)}`;
+  if (value.startsWith('\\\\?\\')) return value.slice(4);
+  return value;
+}
+
 function comparablePath(value) {
-  const normalized = path.normalize(value);
+  const normalized = path.normalize(stripWindowsNamespacePrefix(path.normalize(value)));
   const root = path.parse(normalized).root;
   const withoutTrailingSeparator = normalized.length > root.length
     ? normalized.replace(/[\\/]+$/u, '')
@@ -397,6 +409,24 @@ function isPathWithin(root, candidate) {
 
 function isLinkOrReparse(value) {
   return value?.isSymbolicLink?.() === true || value?.isReparsePoint?.() === true;
+}
+
+async function pathHasReparseComponent(filename) {
+  const absolute = path.resolve(filename);
+  const parsed = path.parse(absolute);
+  const components = absolute.slice(parsed.root.length).split(/[\\/]+/u).filter(Boolean);
+  let current = parsed.root;
+  for (const component of components) {
+    current = path.join(current, component);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch {
+      return true;
+    }
+    if (isLinkOrReparse(info)) return true;
+  }
+  return false;
 }
 
 function directoryFailure() {
@@ -428,13 +458,18 @@ async function inspectEvidenceDirectory(directory) {
   }
   if (!directoryInfo.isDirectory() || isLinkOrReparse(directoryInfo)) return directoryFailure();
 
+  // A Windows TEMP variable may use an 8.3 alias while realpath() returns the
+  // long spelling. Reject actual reparse components, but allow equivalent
+  // spellings of an ordinary directory and use its canonical path below.
+  if (await pathHasReparseComponent(absoluteDirectory)) return directoryFailure();
+
   let realDirectory;
   try {
     realDirectory = await realpath(absoluteDirectory);
   } catch {
     return directoryFailure();
   }
-  if (!samePath(absoluteDirectory, realDirectory)) return directoryFailure();
+  absoluteDirectory = realDirectory;
 
   let entries;
   try {
@@ -507,7 +542,72 @@ export async function verifyEvidenceDirectory(directory) {
   return { ok: errors.length === 0, errors };
 }
 
-export { PACKAGED_FILES, validPackagedEvidence, validInstalledSummary };
+function portableFileLabel(filename) {
+  try {
+    return path.basename(path.resolve(filename)) || '<file>';
+  } catch {
+    return '<file>';
+  }
+}
+
+async function inspectStandaloneEvidenceFile(filename) {
+  let absoluteFile;
+  try {
+    absoluteFile = path.resolve(filename);
+  } catch {
+    return { ok: false, code: 'PACKAGED_EVIDENCE_INVALID' };
+  }
+
+  let fileInfo;
+  try {
+    fileInfo = await lstat(absoluteFile);
+  } catch {
+    return { ok: false, code: 'PACKAGED_EVIDENCE_MISSING_OR_INVALID' };
+  }
+  if (!fileInfo.isFile() || isLinkOrReparse(fileInfo)
+    || await pathHasReparseComponent(absoluteFile)) {
+    return { ok: false, code: 'PACKAGED_EVIDENCE_INVALID' };
+  }
+
+  let realFile;
+  try {
+    realFile = await realpath(absoluteFile);
+  } catch {
+    return { ok: false, code: 'PACKAGED_EVIDENCE_INVALID' };
+  }
+  return { ok: true, file: realFile };
+}
+
+export async function verifyPortableEvidenceFiles(files) {
+  if (!Array.isArray(files) || files.length === 0
+    || files.some(file => typeof file !== 'string' || file.length === 0 || file.startsWith('-'))) {
+    return { ok: false, errors: [failure('<portable>', 'INVALID_ARGUMENT')] };
+  }
+
+  const errors = [];
+  for (const filename of files) {
+    const label = portableFileLabel(filename);
+    const inspected = await inspectStandaloneEvidenceFile(filename);
+    if (!inspected.ok) {
+      errors.push(failure(label, inspected.code));
+      continue;
+    }
+    const value = await readJson(inspected.file);
+    if (value === undefined) {
+      errors.push(failure(label, 'PACKAGED_EVIDENCE_MISSING_OR_INVALID'));
+    } else if (!validPackagedEvidence(value, PORTABLE_EVIDENCE_EXPECTATION, true)) {
+      errors.push(failure(label, 'PACKAGED_EVIDENCE_INVALID'));
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export {
+  PACKAGED_FILES,
+  PORTABLE_EVIDENCE_EXPECTATION,
+  validPackagedEvidence,
+  validInstalledSummary
+};
 
 function isMain() {
   return process.argv[1]
@@ -516,7 +616,25 @@ function isMain() {
 
 if (isMain()) {
   const args = process.argv.slice(2);
-  if (args.length !== 1 || args[0].startsWith('-')) {
+  if (args[0] === '--portable') {
+    const files = args.slice(1);
+    if (files.length === 0 || files.some(file => file.length === 0 || file.startsWith('-'))) {
+      console.error('FAIL INVALID_ARGUMENT');
+      process.exitCode = 2;
+    } else {
+      try {
+        const result = await verifyPortableEvidenceFiles(files);
+        if (result.ok) console.log('PASS');
+        else {
+          console.error(`FAIL ${result.errors[0] ?? 'EVIDENCE_INVALID'}`);
+          process.exitCode = 1;
+        }
+      } catch {
+        console.error('FAIL PACKAGED_EVIDENCE_INVALID');
+        process.exitCode = 2;
+      }
+    }
+  } else if (args.length !== 1 || args[0].startsWith('-')) {
     console.error('FAIL INVALID_ARGUMENT');
     process.exitCode = 2;
   } else {

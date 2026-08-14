@@ -168,6 +168,9 @@ export function installSecureBridge(input: {
       try {
         assertActive();
         input.updates.quitAndInstall();
+        // If electron-updater schedules app.quit() asynchronously, freeze IPC immediately after acceptance.
+        // A synchronous before-quit event may already have set the same one-way gate.
+        quitState.beginQuit();
       }
       catch {
         assertActive();

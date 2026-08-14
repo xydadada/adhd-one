@@ -42,6 +42,7 @@ jobs:
         run: node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked
       - run: npm run verify:fuses -- "dist/win-unpacked/ADHD One.exe"
       - name: Verify package version and Windows assets
+        id: windows-assets
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -52,30 +53,62 @@ jobs:
           }
 
           $dist = Join-Path $PWD 'dist'
+          $setupName = "ADHD-One-Setup-$version-x64.exe"
+          $portableName = "ADHD-One-Portable-$version-win-x64.zip"
+          $setupPath = Join-Path $dist $setupName
+          $portablePath = Join-Path $dist $portableName
+          $latestPath = Join-Path $dist 'latest.yml'
           $required = @(
-            "ADHD-One-Setup-$version-x64.exe",
-            "ADHD-One-Portable-$version-win-x64.zip",
-            'latest.yml'
+            @{ name = $setupName; path = $setupPath },
+            @{ name = $portableName; path = $portablePath },
+            @{ name = 'latest.yml'; path = $latestPath }
           )
-          foreach ($name in $required) {
-            $path = Join-Path $dist $name
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing expected Windows artifact: $name"
+          foreach ($artifact in $required) {
+            if (-not (Test-Path -LiteralPath $artifact.path -PathType Leaf)) {
+              throw "Missing expected Windows artifact: $($artifact.name)"
             }
-            if ((Get-Item -LiteralPath $path).Length -le 0) {
-              throw "Empty Windows artifact: $name"
+            if ((Get-Item -LiteralPath $artifact.path).Length -le 0) {
+              throw "Empty Windows artifact: $($artifact.name)"
             }
           }
-          $setup = Get-Item -LiteralPath (Join-Path $dist "ADHD-One-Setup-$version-x64.exe")
+          $setup = Get-Item -LiteralPath $setupPath
           if ($setup.Length -gt 145MB) {
             throw "Setup exceeds the 145 MiB budget: $([math]::Round($setup.Length / 1MB, 2)) MiB"
           }
 
-          $latest = Get-Content -Raw (Join-Path $dist 'latest.yml')
+          $latest = Get-Content -Raw -LiteralPath $latestPath
           $versionPattern = '(?m)^version:\s*' + [regex]::Escape($version) + '\s*$'
           if ($latest -notmatch $versionPattern) {
             throw "latest.yml version does not match package.json ($version)"
           }
+
+          $latestPathMatch = [regex]::Match($latest, '(?m)^path:\s*([^\r\n]+)\s*$')
+          $latestSha512Match = [regex]::Match($latest, '(?m)^sha512:\s*([^\r\n]+)\s*$')
+          if (-not $latestPathMatch.Success -or -not $latestSha512Match.Success) {
+            throw 'latest.yml is missing path or sha512'
+          }
+          $latestInstallerPath = $latestPathMatch.Groups[1].Value.Trim()
+          $latestSha512 = $latestSha512Match.Groups[1].Value.Trim()
+          if ($latestInstallerPath -ne $setupName) {
+            throw "latest.yml path does not match $setupName"
+          }
+          $sha512 = [Security.Cryptography.SHA512]::Create()
+          try {
+            $setupStream = [System.IO.File]::OpenRead($setupPath)
+            try {
+              $actualSha512 = [Convert]::ToBase64String($sha512.ComputeHash($setupStream))
+            } finally {
+              $setupStream.Dispose()
+            }
+          } finally {
+            $sha512.Dispose()
+          }
+          if ($actualSha512 -ne $latestSha512) {
+            throw 'latest.yml SHA-512 does not match Setup'
+          }
+
+          "setup_path=dist/$setupName" >> $env:GITHUB_OUTPUT
+          "portable_path=dist/$portableName" >> $env:GITHUB_OUTPUT
       - name: Packaged Portable win-unpacked launch smoke
         shell: pwsh
         run: >-
@@ -98,7 +131,7 @@ jobs:
         with:
           name: ${{ steps.artifact-names.outputs.setup_artifact_name }}
           path: |
-            dist/ADHD-One-Setup-*-x64.exe
+            ${{ steps.windows-assets.outputs.setup_path }}
             dist/latest.yml
           compression-level: 0
           retention-days: 7
@@ -107,7 +140,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.artifact-names.outputs.portable_artifact_name }}
-          path: dist/ADHD-One-Portable-*-win-x64.zip
+          path: ${{ steps.windows-assets.outputs.portable_path }}
           compression-level: 0
           retention-days: 7
           if-no-files-found: error

@@ -40,11 +40,11 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 
 ## Verification status
 
-- Windows Server 2025 CI: hardened verification is pending the next full run; no final hardened pass is claimed here. Any Server 2025 result is not Windows 11 evidence.
+- Windows Server 2025 CI: run `31823906216` failed after 12/13 installed cycles; run `31827138503` then failed in the evidence verifier's Windows path canonicalization tests before packaging. Hardened verification is pending a new full run. Server 2025 results are not Windows 11 evidence.
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
 - Packaged E2E: local launch, force-kill, workspace-write, and Portable checks passed with process-tree cleanup; these local checks are not final hardened CI evidence.
-- Current local evidence: `npm run check` passed 25 test files/267 tests, the JavaScript syntax gate passed 21 files, `npm run test:doctor` passed 20/20, and `npm run smoke:runtime-staging` passed with `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`. Setup is 144.04 MiB; packaged launch 3/3, force-kill 1/1, workspace-write 1/1, and real Portable mode 1/1 passed with no remaining child PID. The workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution, and session archival. This does not establish Windows 11, Stable, performance, or the complete installed release E2E.
+- Current local evidence: `npm run check` passed 26 test files (278 passed, 1 Windows 8.3-alias regression skipped because this volume exposes no distinct alias), the JavaScript syntax gate passed 21 files, `npm run test:doctor` passed 20/20, and `npm run smoke:runtime-staging` passed with `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`. Setup is 144.04 MiB; packaged launch 3/3, force-kill 1/1, workspace-write 1/1, and real Portable mode 1/1 passed with no remaining child PID. The workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution, and session archival. This does not establish Windows 11, Stable, performance, or the complete installed release E2E.
 
 ## Development
 

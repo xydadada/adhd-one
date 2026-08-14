@@ -27,9 +27,11 @@
 
 当前本地验证进度：**74%**（在此前 73 分基础上新增 Q2 +1）。`v0.2.0-beta.2` 的 78% 门槛尚未达到；不得提前打 tag。已计入本机 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、快速启动注册一致性检查、真实 Runtime smoke、Runtime staging smoke、Runtime archive closure smoke、迁移/reparse 安全测试、Fuse 静态断言，以及最终 Portable EXE 上使用官方 mock provider 完成的真实 PowerShell tool-call 往返。完整十次循环、NSIS 安装后 E2E、GitHub Actions、Stable 发布和干净 Windows 11 结果尚未计入。
 
-最新本地证据：`npm run check` 最近一次完整运行通过（25 个 test files、267 个 tests），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；冻结源码编译后 `node scripts/smoke-app.mjs` 在 7.84 秒内输出 `SMOKE_OK`。最终 Portable EXE 的 launch、force-kill 和 workspace-write 三个独立 E2E 均通过；workspace-write 证据确认 `packaged-asar` RPC client、`workspace-write` 权限、mock 鉴权、PowerShell 调用、参数解析、工具结果、第二次 provider 往返、最终 nonce、Session 归档、优雅退出和进程树清空。此前真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。这些本地证据仍不等同于完整 packaged suite、NSIS 安装后 E2E、Windows 11 或 Stable 发布证据。
+最新本地证据：`npm run check` 最近一次完整运行通过 26 个 test files（278 个通过，1 个 Windows 8.3 alias 回归因本卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；冻结源码编译后 `node scripts/smoke-app.mjs` 在 7.84 秒内输出 `SMOKE_OK`。最终 Portable EXE 的 launch、force-kill 和 workspace-write 三个独立 E2E 均通过；workspace-write 证据确认 `packaged-asar` RPC client、`workspace-write` 权限、mock 鉴权、PowerShell 调用、参数解析、工具结果、第二次 provider 往返、最终 nonce、Session 归档、优雅退出和进程树清空。此前真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。这些本地证据仍不等同于完整 packaged suite、NSIS 安装后 E2E、Windows 11 或 Stable 发布证据。
 
-2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
+2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
+
+同日 run `31827138503`（commit `8927f7a`）的 Quality 通过，但 Windows verification 在 `npm run check` 阶段失败：15 个 evidence verifier 用例都把 runner 临时目录判为 `EVIDENCE_DIRECTORY_INVALID`，因此 build、installed 和 Portable job 未执行。该结果只证明 Windows runner 路径规范化存在兼容性缺口，不是应用或 Harness 回归，也不计入 Q3。
 
 | 编号 | 工作项 | 总分 | 已得 |
 |---|---|---:|---:|
@@ -344,7 +346,7 @@ npm run test:doctor
 npm run check
 ```
 
-当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 25 个 test files、267 个 tests 全部通过；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
+当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 26 个 test files（278 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
 
 后续阶段待新增（当前不可执行）：
 

@@ -50,7 +50,7 @@ function Test-UninstallCommandTargets([string]$Command, [string]$Executable) {
 
 function Get-InstallProcesses([string]$Root) {
   $prefix = ([IO.Path]::GetFullPath($Root)).TrimEnd('\') + '\'
-  @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+  @(Get-CimInstance Win32_Process -OperationTimeoutSec 15 -ErrorAction Stop | Where-Object {
     if ([string]::IsNullOrWhiteSpace([string]$_.ExecutablePath)) { return $false }
     ([IO.Path]::GetFullPath([string]$_.ExecutablePath)).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
   })
@@ -152,8 +152,20 @@ try {
     throw 'INSTALLED_E2E_SHORTCUT_CREATION_INVALID'
   }
 
-  & node scripts/e2e/run-packaged-suite.mjs --exe $apps[0].FullName --evidence-dir $evidence
-  if ($LASTEXITCODE -ne 0) { throw 'INSTALLED_E2E_PACKAGED_SUITE_FAILED' }
+  $suiteArguments = @(
+    'scripts/e2e/run-packaged-suite.mjs',
+    '--exe',
+    ('"{0}"' -f $apps[0].FullName),
+    '--evidence-dir',
+    ('"{0}"' -f $evidence)
+  )
+  $suite = Start-Process -FilePath 'node' -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden
+  if (-not $suite.WaitForExit(1800000)) {
+    try { $suite.Kill($true) } catch {}
+    try { $suite.WaitForExit(15000) | Out-Null } catch {}
+    throw 'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'
+  }
+  if ($suite.ExitCode -ne 0) { throw 'INSTALLED_E2E_PACKAGED_SUITE_FAILED' }
   $suitePassed = $true
   if (@(Get-InstallProcesses $installRoot).Count -ne 0) { throw 'INSTALLED_E2E_PROCESS_REMAINED' }
 } catch {
@@ -173,7 +185,8 @@ try {
     try {
       $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/S') -PassThru -WindowStyle Hidden
       if (-not $uninstall.WaitForExit(60000)) {
-        $uninstall.Kill($true)
+        try { $uninstall.Kill($true) } catch {}
+        try { $uninstall.WaitForExit(15000) | Out-Null } catch {}
         $cleanupFailures.Add('INSTALLED_E2E_UNINSTALL_TIMEOUT')
       } else {
         $uninstallExitCode = $uninstall.ExitCode

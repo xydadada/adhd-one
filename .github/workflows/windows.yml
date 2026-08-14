@@ -89,6 +89,7 @@ jobs:
             -SetupPath "dist/ADHD-One-Setup-$($package.version)-x64.exe" `
             -EvidenceDirectory evidence/installed
       - name: Portable ZIP launch E2E
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'

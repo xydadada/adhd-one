@@ -47,10 +47,14 @@ describe('SettingsStore', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-'));
     roots.push(root);
     const file = path.join(root, 'settings.json');
+    const workspace = path.join(root, 'workspace');
+    await mkdir(workspace);
+    const workspaceAlias = `${workspace}${path.sep}..${path.sep}${path.basename(workspace)}`;
+    const canonicalWorkspace = await realpath(workspace);
     const v2 = {
       schemaVersion: 2,
       locale: 'en-US',
-      workspace: root,
+      workspace: workspaceAlias,
       preferredPort: 45678,
       appChannel: 'preview',
       runtimeChannel: 'stable',
@@ -63,7 +67,7 @@ describe('SettingsStore', () => {
     await expect(store.load()).resolves.toMatchObject({
       schemaVersion: 3,
       locale: 'en-US',
-      workspace: root,
+      workspace: canonicalWorkspace,
       preferredPort: 45678,
       appChannel: 'preview',
       runtimeChannel: 'stable',
@@ -73,9 +77,35 @@ describe('SettingsStore', () => {
     await expect(store.get().portableDataPath).toBeUndefined();
     const migratedFile = await jsonFile(file);
     expect(migratedFile.schemaVersion).toBe(3);
+    expect(migratedFile.workspace).toBe(canonicalWorkspace);
     expect(Object.prototype.hasOwnProperty.call(migratedFile, 'portableDataPath')).toBe(false);
-    await expect(jsonFile(`${file}.bak`)).resolves.toMatchObject({ schemaVersion: 2, preferredPort: 45678 });
+    await expect(jsonFile(`${file}.bak`)).resolves.toMatchObject({ schemaVersion: 2, preferredPort: 45678, workspace: canonicalWorkspace });
     await expect(readdir(root)).resolves.not.toContain('settings.json.tmp');
+  });
+
+  it('canonicalizes a current V3 workspace while loading it', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-v3-'));
+    roots.push(root);
+    const file = path.join(root, 'settings.json');
+    const workspace = path.join(root, 'workspace');
+    await mkdir(workspace);
+    const workspaceAlias = `${workspace}${path.sep}..${path.sep}${path.basename(workspace)}`;
+    const canonicalWorkspace = await realpath(workspace);
+    await writeFile(file, JSON.stringify({
+      schemaVersion: 3,
+      locale: 'zh-CN',
+      workspace: workspaceAlias,
+      preferredPort: 34567,
+      appChannel: 'stable',
+      runtimeChannel: 'stable',
+      closeToTrayExplained: false,
+      migration: { v1Imported: false, legacyDshPrompted: false }
+    }), 'utf8');
+
+    const store = new SettingsStore(file);
+    await expect(store.load()).resolves.toMatchObject({ schemaVersion: 3, workspace: canonicalWorkspace });
+    await expect(jsonFile(file)).resolves.toMatchObject({ schemaVersion: 3, workspace: canonicalWorkspace });
+    await expect(jsonFile(`${file}.bak`)).resolves.toMatchObject({ schemaVersion: 3, workspace: canonicalWorkspace });
   });
 
   it('recovers a V2 backup into V3 without replacing the valid backup', async () => {
@@ -83,10 +113,15 @@ describe('SettingsStore', () => {
     roots.push(root);
     const file = path.join(root, 'settings.json');
     const backup = `${file}.bak`;
+    const workspace = path.join(root, 'workspace');
+    await mkdir(workspace);
+    const workspaceAlias = `${workspace}${path.sep}..${path.sep}${path.basename(workspace)}`;
+    const canonicalWorkspace = await realpath(workspace);
     await writeFile(file, '{broken', 'utf8');
     await writeFile(backup, JSON.stringify({
       schemaVersion: 2,
       locale: 'zh-CN',
+      workspace: workspaceAlias,
       preferredPort: 23456,
       appChannel: 'stable',
       runtimeChannel: 'preview',
@@ -95,9 +130,38 @@ describe('SettingsStore', () => {
     }), 'utf8');
 
     const store = new SettingsStore(file);
-    await expect(store.load()).resolves.toMatchObject({ schemaVersion: 3, preferredPort: 23456, runtimeChannel: 'preview' });
-    await expect(jsonFile(file)).resolves.toMatchObject({ schemaVersion: 3, preferredPort: 23456 });
+    await expect(store.load()).resolves.toMatchObject({ schemaVersion: 3, preferredPort: 23456, runtimeChannel: 'preview', workspace: canonicalWorkspace });
+    await expect(jsonFile(file)).resolves.toMatchObject({ schemaVersion: 3, preferredPort: 23456, workspace: canonicalWorkspace });
     await expect(jsonFile(backup)).resolves.toMatchObject({ schemaVersion: 2, preferredPort: 23456 });
+  });
+
+  it('canonicalizes workspace paths for save and update', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-write-workspace-'));
+    roots.push(root);
+    const file = path.join(root, 'settings.json');
+    const workspace = path.join(root, 'workspace');
+    await mkdir(workspace);
+    const canonicalWorkspace = await realpath(workspace);
+    const saveAlias = `${workspace}${path.sep}..${path.sep}${path.basename(workspace)}`;
+    const updateAlias = `${root}${path.sep}.${path.sep}${path.basename(workspace)}`;
+    const store = new SettingsStore(file);
+
+    await store.save({
+      schemaVersion: 3,
+      locale: 'zh-CN',
+      workspace: saveAlias,
+      preferredPort: 34567,
+      appChannel: 'stable',
+      runtimeChannel: 'stable',
+      closeToTrayExplained: false,
+      migration: { v1Imported: false, legacyDshPrompted: false }
+    });
+    expect(store.get().workspace).toBe(canonicalWorkspace);
+    await expect(jsonFile(file)).resolves.toMatchObject({ workspace: canonicalWorkspace });
+
+    await store.update({ workspace: updateAlias });
+    expect(store.get().workspace).toBe(canonicalWorkspace);
+    await expect(jsonFile(file)).resolves.toMatchObject({ workspace: canonicalWorkspace });
   });
 
   it('round-trips the optional portable data path in V3', async () => {
@@ -157,7 +221,7 @@ describe('SettingsStore', () => {
     const store = new SettingsStore(file);
     await store.load();
 
-    await Promise.all([store.setWorkspace(workspace), store.update({ locale: 'en-US' })]);
+    await Promise.all([store.setWorkspace(`${workspace}${path.sep}..${path.sep}${path.basename(workspace)}`), store.update({ locale: 'en-US' })]);
 
     const snapshot = store.get();
     expect(snapshot.locale).toBe('en-US');

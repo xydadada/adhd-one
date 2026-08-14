@@ -8,7 +8,8 @@ $setup = [IO.Path]::GetFullPath($SetupPath)
 $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'INSTALLED_E2E_SETUP_MISSING' }
 
-$runRoot = Join-Path $env:RUNNER_TEMP ('adhd-one-installed-' + [guid]::NewGuid().ToString('N'))
+$tempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { [IO.Path]::GetTempPath() } else { $env:RUNNER_TEMP }
+$runRoot = Join-Path $tempRoot ('adhd-one-installed-' + [guid]::NewGuid().ToString('N'))
 $installRoot = Join-Path $runRoot 'install'
 if ($installRoot -match '\s') { throw 'INSTALLED_E2E_UNSAFE_NSiS_PATH' }
 New-Item -ItemType Directory -Path $runRoot,$evidence -Force | Out-Null
@@ -25,6 +26,7 @@ function Get-AdhdUninstallRecords {
         [pscustomobject]@{
           Key = $key.PSPath
           InstallLocation = [string]$value.InstallLocation
+          UninstallString = [string]$value.UninstallString
           QuietUninstallString = [string]$value.QuietUninstallString
         }
       }
@@ -49,8 +51,11 @@ function Get-InstallMarkers([string]$Root) {
   }
 }
 
-$desktop = [Environment]::GetFolderPath('Desktop')
+$desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
 $appData = [Environment]::GetFolderPath('ApplicationData')
+if ([string]::IsNullOrWhiteSpace($desktop) -or [string]::IsNullOrWhiteSpace($appData)) {
+  throw 'INSTALLED_E2E_SHELL_FOLDER_UNAVAILABLE'
+}
 $shortcuts = @(
   (Join-Path $desktop 'ADHD One.lnk'),
   (Join-Path $appData 'Microsoft\Windows\Start Menu\Programs\ADHD One.lnk'),
@@ -95,7 +100,9 @@ try {
   $records = @(Get-AdhdUninstallRecords | Where-Object {
     $_.InstallLocation -and ([IO.Path]::GetFullPath($_.InstallLocation)).TrimEnd('\') -ieq ([IO.Path]::GetFullPath($installRoot)).TrimEnd('\')
   })
-  if ($records.Count -ne 1 -or $records[0].QuietUninstallString -notmatch '(?i)/S') {
+  if ($records.Count -ne 1 -or
+      ($records[0].UninstallString -notmatch '(?i)Uninstall ADHD One\.exe' -and
+       $records[0].QuietUninstallString -notmatch '(?i)Uninstall ADHD One\.exe')) {
     throw 'INSTALLED_E2E_UNINSTALL_RECORD_INVALID'
   }
   $shortcutsCreated = (@($expectedShortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $expectedShortcuts.Count)
@@ -122,7 +129,7 @@ try {
   if ($uninstaller -and (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     $uninstallAttempted = $true
     try {
-      $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/S', '/currentuser') -PassThru -WindowStyle Hidden
+      $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/S') -PassThru -WindowStyle Hidden
       if (-not $uninstall.WaitForExit(60000)) {
         $uninstall.Kill($true)
         $cleanupFailures.Add('INSTALLED_E2E_UNINSTALL_TIMEOUT')
@@ -136,9 +143,19 @@ try {
     $cleanupFailures.Add('INSTALLED_E2E_UNINSTALLER_MISSING')
   }
 
+  # The NSIS launcher can exit after the install directory is removed but
+  # before its elevated/child cleanup removes ARP keys and shortcuts. Poll the
+  # complete uninstall contract instead of treating directory removal as the
+  # completion signal.
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  while ((Test-Path -LiteralPath $installRoot) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-  $installDirectoryRemoved = -not (Test-Path -LiteralPath $installRoot)
+  do {
+    $installDirectoryRemoved = -not (Test-Path -LiteralPath $installRoot)
+    $uninstallRecordsClean = (@(Get-AdhdUninstallRecords).Count -eq 0)
+    $installMarkersClean = (@(Get-InstallMarkers $installRoot).Count -eq 0)
+    $shortcutsClean = (@($shortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0)
+    if ($installDirectoryRemoved -and $uninstallRecordsClean -and $installMarkersClean -and $shortcutsClean) { break }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
   if (-not $installDirectoryRemoved) { $cleanupFailures.Add('INSTALLED_E2E_INSTALL_DIRECTORY_REMAINED') }
   try {
     $processClean = (@(Get-InstallProcesses $installRoot).Count -eq 0)
@@ -147,13 +164,10 @@ try {
   try {
     # The preflight requires zero ADHD One records, so any matching record after
     # uninstall is residue even when InstallLocation is missing or corrupted.
-    $uninstallRecordsClean = (@(Get-AdhdUninstallRecords).Count -eq 0)
-    $installMarkersClean = (@(Get-InstallMarkers $installRoot).Count -eq 0)
     $registryClean = $uninstallRecordsClean -and $installMarkersClean
     if (-not $uninstallRecordsClean) { $cleanupFailures.Add('INSTALLED_E2E_REGISTRY_REMAINED') }
     if (-not $installMarkersClean) { $cleanupFailures.Add('INSTALLED_E2E_INSTALL_MARKER_REMAINED') }
   } catch { $cleanupFailures.Add('INSTALLED_E2E_REGISTRY_AUDIT_FAILED') }
-  $shortcutsClean = (@($shortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0)
   if (-not $shortcutsClean) { $cleanupFailures.Add('INSTALLED_E2E_SHORTCUT_REMAINED') }
 
   $summary = [ordered]@{

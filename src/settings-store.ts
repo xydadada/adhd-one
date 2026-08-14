@@ -39,6 +39,7 @@ interface ParsedSettingsFile {
   value: AppSettingsV3;
   serialized: string;
   schemaVersion: 2 | 3;
+  needsRewrite: boolean;
 }
 
 type ReadSettingsResult =
@@ -69,6 +70,17 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return errorCode(error) === code;
 }
 
+type WorkspaceErrorCode = 'WORKSPACE_NOT_FOUND' | 'WORKSPACE_NOT_DIRECTORY';
+
+function workspaceError(code: WorkspaceErrorCode): Error {
+  return new Error(code);
+}
+
+function isWorkspaceError(error: unknown): error is Error {
+  return error instanceof Error
+    && (error.message === 'WORKSPACE_NOT_FOUND' || error.message === 'WORKSPACE_NOT_DIRECTORY');
+}
+
 function ioError(): SettingsStoreError {
   return new SettingsStoreError('SETTINGS_IO');
 }
@@ -81,8 +93,9 @@ function lockedError(): SettingsStoreError {
   return new SettingsStoreError('SETTINGS_LOCKED');
 }
 
-function asSettingsError(error: unknown): SettingsStoreError {
-  return error instanceof SettingsStoreError ? error : ioError();
+function asSettingsError(error: unknown): SettingsStoreError | Error {
+  if (error instanceof SettingsStoreError || isWorkspaceError(error)) return error;
+  return ioError();
 }
 
 function serializeSettings(value: AppSettingsV2 | AppSettingsV3): string {
@@ -106,13 +119,53 @@ function parseSettings(value: unknown): ParsedSettingsFile | undefined {
   const v3 = settingsV3Schema.safeParse(value);
   if (v3.success) {
     const current = v3.data as AppSettingsV3;
-    return { value: current, serialized: serializeSettings(current), schemaVersion: 3 };
+    return { value: current, serialized: serializeSettings(current), schemaVersion: 3, needsRewrite: false };
   }
 
   const v2 = settingsV2Schema.safeParse(value);
   if (!v2.success) return undefined;
   const legacy = v2.data as AppSettingsV2;
-  return { value: migrateV2(legacy), serialized: serializeSettings(legacy), schemaVersion: 2 };
+  return { value: migrateV2(legacy), serialized: serializeSettings(legacy), schemaVersion: 2, needsRewrite: false };
+}
+
+async function canonicalizeWorkspace(candidate: string): Promise<string> {
+  try {
+    const canonical = await realpath(candidate);
+    if (!(await stat(canonical)).isDirectory()) throw workspaceError('WORKSPACE_NOT_DIRECTORY');
+    return canonical;
+  } catch (error) {
+    if (isWorkspaceError(error)) throw error;
+    if (hasErrorCode(error, 'ENOENT')) throw workspaceError('WORKSPACE_NOT_FOUND');
+    throw asSettingsError(error);
+  }
+}
+
+async function canonicalizeSettings(value: AppSettingsV3): Promise<AppSettingsV3> {
+  if (value.workspace === undefined) return value;
+  return { ...value, workspace: await canonicalizeWorkspace(value.workspace) };
+}
+
+function toV2(value: AppSettingsV3): AppSettingsV2 {
+  return {
+    schemaVersion: 2,
+    locale: value.locale,
+    ...(value.workspace !== undefined ? { workspace: value.workspace } : {}),
+    preferredPort: value.preferredPort,
+    appChannel: value.appChannel,
+    runtimeChannel: value.runtimeChannel,
+    closeToTrayExplained: value.closeToTrayExplained,
+    migration: { ...value.migration }
+  };
+}
+
+async function canonicalizeParsedSettings(file: ParsedSettingsFile): Promise<ParsedSettingsFile> {
+  const value = await canonicalizeSettings(file.value);
+  return {
+    value,
+    serialized: file.schemaVersion === 2 ? serializeSettings(toV2(value)) : serializeSettings(value),
+    schemaVersion: file.schemaVersion,
+    needsRewrite: file.schemaVersion === 2 || value.workspace !== file.value.workspace
+  };
 }
 
 async function readSettingsFile(filename: string): Promise<ReadSettingsResult> {
@@ -124,12 +177,10 @@ async function readSettingsFile(filename: string): Promise<ReadSettingsResult> {
     throw ioError();
   }
 
-  try {
-    const parsed = parseSettings(JSON.parse(serialized) as unknown);
-    return parsed ? { kind: 'valid', file: parsed } : { kind: 'corrupt' };
-  } catch {
-    return { kind: 'corrupt' };
-  }
+  let parsed: ParsedSettingsFile | undefined;
+  try { parsed = parseSettings(JSON.parse(serialized) as unknown); } catch { return { kind: 'corrupt' }; }
+  if (!parsed) return { kind: 'corrupt' };
+  return { kind: 'valid', file: await canonicalizeParsedSettings(parsed) };
 }
 
 function normalizeSettings(value: unknown): AppSettingsV3 {
@@ -507,17 +558,8 @@ export class SettingsStore {
 
   async setWorkspace(candidate: string): Promise<string> {
     return this.enqueue(async () => {
-      let canonical: string;
-      try {
-        canonical = await realpath(candidate);
-        if (!(await stat(canonical)).isDirectory()) throw new Error('WORKSPACE_NOT_DIRECTORY');
-      } catch (error) {
-        if (error instanceof Error && error.message === 'WORKSPACE_NOT_DIRECTORY') throw error;
-        if (hasErrorCode(error, 'ENOENT')) throw new Error('WORKSPACE_NOT_FOUND');
-        throw asSettingsError(error);
-      }
-
-      await this.persistPatch({ workspace: canonical });
+      const canonical = await canonicalizeWorkspace(candidate);
+      await this.persistPatch({ workspace: canonical }, true);
       return canonical;
     });
   }
@@ -542,20 +584,23 @@ export class SettingsStore {
   }
 
   private async persist(next: AppSettingsV3): Promise<void> {
+    let committed: AppSettingsV3 | undefined;
     try {
-      await enqueueShared(this.filename, () => this.persistToDisk(next));
+      committed = await canonicalizeSettings(next);
+      await enqueueShared(this.filename, () => this.persistToDisk(committed!));
     } catch (error) {
       throw asSettingsError(error);
     }
 
-    this.value = structuredClone(next);
+    if (!committed) throw ioError();
+    this.value = structuredClone(committed);
   }
 
   private async loadToDisk(): Promise<AppSettingsV3> {
     return this.withWriterLock(async () => {
       const current = await readSettingsFile(this.filename);
       if (current.kind === 'valid') {
-        if (current.file.schemaVersion === 2) {
+        if (current.file.schemaVersion === 2 || current.file.needsRewrite) {
           await this.writeNextLocked(current.file.value, current);
         }
         return current.file.value;
@@ -584,7 +629,7 @@ export class SettingsStore {
     });
   }
 
-  private async persistPatch(patch: Partial<AppSettings>): Promise<AppSettingsV3> {
+  private async persistPatch(patch: Partial<AppSettings>, workspaceAlreadyCanonical = false): Promise<AppSettingsV3> {
     let committed: AppSettingsV3 | undefined;
     try {
       committed = await enqueueShared(this.filename, () => this.withWriterLock(async () => {
@@ -600,7 +645,8 @@ export class SettingsStore {
           base = backup.kind === 'valid' ? backup.file.value : this.value;
         }
 
-        const next = normalizeSettings({ ...base, ...patch });
+        const normalized = normalizeSettings({ ...base, ...patch });
+        const next = workspaceAlreadyCanonical ? normalized : await canonicalizeSettings(normalized);
         await this.writeNextLocked(next, existing);
         return next;
       }));

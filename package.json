@@ -1,52 +1,96 @@
 {
-  "name": "awesome-deepseek-harness-desktop",
-  "version": "0.1.0",
-  "description": "An unofficial, batteries-included Electron desktop shell for the official DeepSeek Harness.",
+  "name": "adhd-one",
+  "version": "0.2.0",
+  "description": "An unofficial, batteries-included Windows desktop for DeepSeek Harness.",
   "type": "module",
-  "main": "src/main.js",
+  "main": "out/main.js",
   "author": "xydadada",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xydadada/awesome-deepseek-harness-desktop.git"
+    "url": "https://github.com/xydadada/adhd-one.git"
   },
   "scripts": {
-    "start": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron .",
-    "smoke": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron . --smoke-test",
     "prepare-electron": "node node_modules/electron/install.js",
     "prepare-runtime": "node scripts/prepare-node-runtime.mjs && node scripts/prepare-dsh-runtime.mjs",
+    "prepare-runtime-archive": "node scripts/prepare-runtime-archive.mjs",
     "generate-icons": "node scripts/generate-icons.mjs",
-    "test": "node --test",
-    "check": "node --check src/main.js && node --check src/preload.cjs && npm test",
-    "build:win": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron-builder --win nsis"
+    "build:app": "tsc -p tsconfig.json",
+    "start": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && electron .",
+    "smoke": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && electron . --smoke-test",
+    "test": "vitest run",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run",
+    "audit:signatures": "npm audit signatures && npm audit signatures --prefix runtime",
+    "build:setup": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && electron-builder --config build/setup.yml --win nsis --x64 --publish never",
+    "build:portable": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && electron-builder --win zip --x64 --publish never",
+    "build:win": "npm run build:setup && npm run build:portable",
+    "sbom": "syft dir:. -o spdx-json=dist/ADHD-One-0.2.0.spdx.json"
+  },
+  "dependencies": {
+    "@electron/fuses": "2.1.3",
+    "@sigstore/verify": "4.1.2",
+    "electron-log": "5.4.4",
+    "electron-updater": "6.8.9",
+    "koffi": "3.1.5",
+    "sigstore": "5.0.0",
+    "ws": "8.21.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "7zip-bin": "5.2.0",
     "electron": "43.4.0",
     "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "license-checker-rseidelsohn": "5.0.1",
+    "playwright": "1.62.1",
     "png-to-ico": "3.0.2",
-    "sharp": "0.35.3"
+    "sharp": "0.35.3",
+    "@types/ws": "8.18.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
   },
   "build": {
     "appId": "io.github.xydadada.adhd",
-    "productName": "Awesome DeepSeek Harness Desktop",
+    "productName": "ADHD One",
     "directories": {
       "output": "dist"
     },
     "files": [
-      "src/**/*",
+      "out/**/*",
+      "src/renderer/**/*",
+      "src/preload.cjs",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "asar": true,
     "extraResources": [
       {
         "from": "vendor/node",
-        "to": "node-runtime"
+        "to": "node-runtime",
+        "filter": [
+          "node.exe",
+          "LICENSE",
+          "README.md"
+        ]
       },
       {
-        "from": "vendor/dsh-runtime.7z",
-        "to": "dsh-runtime.7z"
+        "from": "runtime",
+        "to": "dsh-runtime",
+        "filter": [
+          "package.json",
+          "package-lock.json",
+          "bin/**/*"
+        ]
+      },
+      {
+        "from": "runtime/node_modules",
+        "to": "dsh-runtime/node_modules"
+      },
+      {
+        "from": "src/supervisor.mjs",
+        "to": "supervisor/supervisor.mjs"
       },
       {
         "from": "node_modules/7zip-bin/win/x64/7za.exe",
@@ -54,20 +98,37 @@
       }
     ],
     "npmRebuild": false,
+    "afterPack": "scripts/after-pack.mjs",
     "win": {
-      "target": ["nsis"],
-      "icon": "assets/icon.ico"
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "ADHD-One-Portable-${version}-win-${arch}.${ext}"
     },
     "nsis": {
-      "artifactName": "ADHD-Setup-${version}-${arch}.${ext}",
+      "artifactName": "ADHD-One-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Awesome DeepSeek Harness Desktop"
-    }
+      "shortcutName": "ADHD One",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "xydadada",
+        "repo": "adhd-one",
+        "releaseType": "release"
+      }
+    ]
   },
   "allowScripts": {
-    "electron@43.4.0": true
+    "electron@43.4.0": true,
+    "koffi@3.1.5": true
   }
 }

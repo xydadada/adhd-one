@@ -1,0 +1,43 @@
+appId: io.github.xydadada.adhd
+productName: ADHD One
+directories:
+  output: dist
+files:
+  - out/**/*
+  - src/renderer/**/*
+  - src/preload.cjs
+  - assets/**/*
+  - package.json
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
+asar: true
+extraResources:
+  - from: vendor/node
+    to: node-runtime
+    filter: [node.exe, LICENSE, README.md]
+  - from: vendor/dsh-runtime.7z
+    to: dsh-runtime.7z
+  - from: src/supervisor.mjs
+    to: supervisor/supervisor.mjs
+  - from: node_modules/7zip-bin/win/x64/7za.exe
+    to: tools/7za.exe
+npmRebuild: false
+afterPack: scripts/after-pack.mjs
+win:
+  target: [nsis]
+  icon: assets/icon.ico
+nsis:
+  artifactName: ADHD-One-Setup-${version}-${arch}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ADHD One
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+publish:
+  - provider: github
+    owner: xydadada
+    repo: adhd-one
+    releaseType: release

@@ -9,8 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtime = path.join(root, 'runtime');
 const lockfile = path.join(runtime, 'package-lock.json');
 const dshEntry = path.join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
-const archive = path.join(root, 'vendor', 'dsh-runtime.7z');
-const sevenZip = path.join(root, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe');
+const bin = path.join(runtime, 'bin');
 
 try {
   await fs.access(dshEntry);
@@ -22,21 +21,9 @@ try {
   await execFileAsync(process.execPath, [npmCli, command, '--prefix', runtime], { cwd: root, windowsHide: true });
 }
 
-const [archiveStat, lockStat] = await Promise.all([
-  fs.stat(archive).catch(() => null),
-  fs.stat(lockfile)
+await fs.mkdir(bin, { recursive: true });
+await Promise.all([
+  fs.writeFile(path.join(bin, 'node.cmd'), '@"%ADHD_NODE_EXE%" %*\r\n', 'utf8'),
+  fs.writeFile(path.join(bin, 'pnpm.cmd'), '@"%ADHD_NODE_EXE%" "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*\r\n', 'utf8')
 ]);
-if (archiveStat && archiveStat.mtimeMs >= lockStat.mtimeMs) {
-  console.log('Using cached DSH runtime archive.');
-  process.exit(0);
-}
-
-await fs.mkdir(path.dirname(archive), { recursive: true });
-await fs.rm(archive, { force: true });
-console.log('Compressing the isolated DSH runtime.');
-await execFileAsync(sevenZip, ['a', '-t7z', '-mx=5', archive, 'node_modules', 'package.json', 'package-lock.json'], {
-  cwd: runtime,
-  windowsHide: true,
-  maxBuffer: 10 * 1024 * 1024
-});
-console.log(`Prepared ${path.relative(root, archive)}.`);
+console.log('Prepared pre-expanded isolated DSH runtime.');

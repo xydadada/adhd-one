@@ -4,7 +4,8 @@
   "private": true,
   "dependencies": {
     "@deepseek-ai/cordis-plugin-group": "1.0.1",
-    "@deepseek-ai/dsh": "0.1.0-rc.6"
+    "@deepseek-ai/dsh": "0.1.0-rc.6",
+    "pnpm": "11.21.0"
   },
   "allowScripts": {
     "@deepseek-ai/dsh-subprocess-local@0.1.0-rc.6": true,

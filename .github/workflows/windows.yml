@@ -1,4 +1,4 @@
-name: Windows build
+name: Windows verification
 
 on:
   push:
@@ -10,22 +10,25 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 30
+  test-and-package:
+    runs-on: windows-2025
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 24
+          node-version: 24.18.0
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts --prefix runtime
+      - run: npm run audit:signatures
       - run: npm run check
-      - run: npm run smoke
-      - run: npm run build:win
-      - uses: actions/upload-artifact@v4
+      - run: npm run build:setup
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ADHD-Windows-x64
+          name: ADHD-One-Windows-x64
           path: |
-            dist/ADHD-Setup-*-x64.exe
+            dist/ADHD-One-Setup-*-x64.exe
+            dist/ADHD-One-*-x64.zip
+            dist/*.yml
           if-no-files-found: error

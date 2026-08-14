@@ -726,6 +726,17 @@ function processTree(processes, rootPid) {
   return [...selected.values()];
 }
 
+export async function waitForProcessTree(readProcesses, rootPid, runtimePid, timeoutMs = FORCE_EXIT_TIMEOUT_MS, pollIntervalMs = 200) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastTree = [];
+  do {
+    lastTree = processTree(await readProcesses(), rootPid);
+    if (lastTree.some(item => item.pid === rootPid) && lastTree.some(item => item.pid === runtimePid)) return lastTree;
+    if (Date.now() >= deadline) return lastTree;
+    await delay(Math.min(Math.max(0, pollIntervalMs), Math.max(0, deadline - Date.now())));
+  } while (true);
+}
+
 function normalizedWindowsPath(value) {
   const text = String(value ?? '').trim().replace(/^['"]|['"]$/gu, '').replace(/\//gu, '\\');
   if (!text) return '';
@@ -1351,7 +1362,10 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
       record.errorCode ??= errorCode;
       if (!record.workspaceWriteVerified) throw new Error(errorCode ?? 'WORKSPACE_WRITE_FAILED');
     }
-    launchedTree = processTree(await windowsProcesses(), child.pid);
+    // CIM can transiently omit a just-started process even after CDP and the
+    // runtime RPC are ready. Require a bounded, identity-linked snapshot rather
+    // than treating one empty sample as proof that the runtime is unowned.
+    launchedTree = await waitForProcessTree(windowsProcesses, child.pid, record.runtimePid);
     record.processTreeCount = launchedTree.length;
     if (!launchedTree.some(item => item.pid === record.runtimePid)) throw new Error('RUNTIME_PID_NOT_IN_APP_PROCESS_TREE');
     record.runtimeReadyMs = Date.now() - startedAt;

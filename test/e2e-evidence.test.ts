@@ -7,7 +7,8 @@ import {
   shouldCopyPortableEntry,
   stableErrorCode,
   stableStageErrorCode,
-  waitForCdp
+  waitForCdp,
+  waitForProcessTree
 } from '../scripts/e2e/packaged.mjs';
 
 describe('packaged E2E evidence safety', () => {
@@ -100,6 +101,16 @@ describe('packaged E2E evidence safety', () => {
       .toBe('HOST_DESCRIBE_TIMEOUT');
     expect(stableStageErrorCode(new Error('provider returned an opaque body'), 'RUNTIME_SNAPSHOT_EVALUATE_FAILED', 'RUNTIME_SNAPSHOT_EVALUATE_TIMEOUT'))
       .toBe('RUNTIME_SNAPSHOT_EVALUATE_FAILED');
+  });
+
+  it('retries a transiently empty Windows process snapshot until the runtime is linked to the Electron root', async () => {
+    let calls = 0;
+    const root = { pid: 100, parentPid: 1, name: 'ADHD One.exe', executablePath: 'C:\\ADHD One.exe', created: 'root' };
+    const runtime = { pid: 200, parentPid: 100, name: 'node.exe', executablePath: 'C:\\node.exe', created: 'runtime' };
+    const tree = await waitForProcessTree(async () => (++calls === 1 ? [] : [root, runtime]), 100, 200, 1_000, 0);
+
+    expect(calls).toBe(2);
+    expect(tree.map(item => item.pid)).toEqual([100, 200]);
   });
 
   it('keeps workspace-write evidence to booleans and enums', () => {

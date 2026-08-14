@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Starting DeepSeek Harness</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; color: #eaf0ff; background: radial-gradient(circle at 22% 18%, #1c2455 0, transparent 35%), radial-gradient(circle at 80% 75%, #193c48 0, transparent 35%), #070a12; }
+      main { width: min(720px, calc(100vw - 48px)); padding: 42px; border: 1px solid #293050; border-radius: 24px; background: rgba(10, 14, 28, .82); box-shadow: 0 28px 90px rgba(0,0,0,.42); backdrop-filter: blur(18px); }
+      .brand { display: flex; align-items: center; gap: 18px; }
+      .mark { width: 64px; height: 64px; display: grid; place-items: center; border-radius: 17px; background: linear-gradient(145deg, #7668ff, #40d6cc); color: #071018; font-weight: 900; letter-spacing: -2px; box-shadow: 0 12px 36px rgba(90,105,255,.35); }
+      h1 { margin: 0 0 5px; font-size: 26px; letter-spacing: -.4px; }
+      .subtitle { margin: 0; color: #98a6c8; }
+      .status { margin: 32px 0 14px; display: flex; align-items: center; gap: 12px; color: #cbd5f0; }
+      .spinner { width: 16px; height: 16px; border: 2px solid #3a4469; border-top-color: #7b78ff; border-radius: 50%; animation: spin .85s linear infinite; }
+      .failed .spinner { animation: none; border-color: #ff6b7d; }
+      pre { max-height: 220px; overflow: auto; padding: 16px; border: 1px solid #242d4a; border-radius: 12px; background: #080b14; color: #8291b6; font: 12px/1.55 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; }
+      .actions { display: flex; gap: 10px; margin-top: 18px; }
+      button { border: 0; border-radius: 10px; padding: 10px 15px; color: white; background: #655bf6; font-weight: 650; cursor: pointer; }
+      button.secondary { color: #dbe3ff; background: #202943; }
+      footer { margin-top: 24px; color: #7180a4; font-size: 12px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <div class="mark">ADHD</div>
+        <div><h1>Awesome DeepSeek Harness Desktop</h1><p class="subtitle">The unofficial desktop home for the official DSH runtime.</p></div>
+      </div>
+      <div class="status"><span class="spinner"></span><span id="status">Preparing the local runtime…</span></div>
+      <pre id="log">Waiting for DeepSeek Harness…</pre>
+      <div class="actions">
+        <button id="retry">Retry</button>
+        <button class="secondary" id="workspace">Choose workspace</button>
+      </div>
+      <footer>Unofficial community project. Not affiliated with or endorsed by DeepSeek.</footer>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search);
+      if (params.get('reason') === 'failed' || params.get('reason') === 'stopped') document.body.classList.add('failed');
+      const status = document.querySelector('#status');
+      const log = document.querySelector('#log');
+      window.desktop.onStatus((payload) => {
+        status.textContent = payload.message || 'Working…';
+        log.textContent = payload.log || 'Waiting for DeepSeek Harness…';
+        log.scrollTop = log.scrollHeight;
+      });
+      window.desktop.details().then((payload) => { if (payload.log) log.textContent = payload.log; });
+      document.querySelector('#retry').addEventListener('click', () => window.desktop.retry());
+      document.querySelector('#workspace').addEventListener('click', () => window.desktop.chooseWorkspace());
+    </script>
+  </body>
+</html>

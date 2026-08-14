@@ -1,0 +1,73 @@
+{
+  "name": "awesome-deepseek-harness-desktop",
+  "version": "0.1.0",
+  "description": "An unofficial, batteries-included Electron desktop shell for the official DeepSeek Harness.",
+  "type": "module",
+  "main": "src/main.js",
+  "author": "xydadada",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xydadada/awesome-deepseek-harness-desktop.git"
+  },
+  "scripts": {
+    "start": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron .",
+    "smoke": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron . --smoke-test",
+    "prepare-electron": "node node_modules/electron/install.js",
+    "prepare-runtime": "node scripts/prepare-node-runtime.mjs && node scripts/prepare-dsh-runtime.mjs",
+    "generate-icons": "node scripts/generate-icons.mjs",
+    "test": "node --test",
+    "check": "node --check src/main.js && node --check src/preload.cjs && npm test",
+    "build:win": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "7zip-bin": "5.2.0",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "png-to-ico": "3.0.2",
+    "sharp": "0.35.3"
+  },
+  "build": {
+    "appId": "io.github.xydadada.adhd",
+    "productName": "Awesome DeepSeek Harness Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "vendor/node",
+        "to": "node-runtime"
+      },
+      {
+        "from": "vendor/dsh-runtime.7z",
+        "to": "dsh-runtime.7z"
+      },
+      {
+        "from": "node_modules/7zip-bin/win/x64/7za.exe",
+        "to": "tools/7za.exe"
+      }
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "ADHD-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Awesome DeepSeek Harness Desktop"
+    }
+  },
+  "allowScripts": {
+    "electron@43.4.0": true
+  }
+}

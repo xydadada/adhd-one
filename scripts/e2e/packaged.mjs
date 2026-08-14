@@ -701,7 +701,7 @@ export function shouldCopyPortableEntry(sourceRoot, source) {
 }
 
 async function windowsProcesses() {
-  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress";
+  const script = "$selfPid = $PID; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | Where-Object { $_.ProcessId -ne $selfPid -and $_.ParentProcessId -ne $selfPid } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | ConvertTo-Json -Compress";
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   const value = JSON.parse(stdout);
   return (Array.isArray(value) ? value : [value]).map(item => ({
@@ -709,7 +709,6 @@ async function windowsProcesses() {
     parentPid: Number(item.ParentProcessId),
     name: String(item.Name ?? ''),
     executablePath: String(item.ExecutablePath ?? ''),
-    commandLine: String(item.CommandLine ?? ''),
     created: String(item.CreationDate ?? '')
   }));
 }
@@ -733,20 +732,11 @@ function normalizedWindowsPath(value) {
   return path.win32.normalize(text).replace(/[\\]+$/u, '').toLowerCase();
 }
 
-function normalizedWindowsText(value) {
-  return String(value ?? '').replace(/\//gu, '\\').toLowerCase();
-}
-
 function pathIsWithin(root, candidate) {
   const normalizedRoot = normalizedWindowsPath(root);
   const normalizedCandidate = normalizedWindowsPath(candidate);
   return Boolean(normalizedRoot && normalizedCandidate
     && (normalizedRoot === normalizedCandidate || normalizedCandidate.startsWith(`${normalizedRoot}\\`)));
-}
-
-function commandLineReferences(commandLine, candidate) {
-  const normalizedCandidate = normalizedWindowsPath(candidate);
-  return Boolean(normalizedCandidate && normalizedWindowsText(commandLine).includes(normalizedCandidate));
 }
 
 function processCreationTime(value) {
@@ -796,11 +786,10 @@ function isScopedProcess(item, currentByPid, scope) {
   const known = scope.knownByPid.get(item.pid);
   if (known && sameProcessIdentity(item, known)) return true;
   if (hasKnownProcessAncestor(item, currentByPid, scope.knownByPid, scope.knownPids, scope.startedAt)) return true;
-  if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath) || commandLineReferences(item.commandLine, root))) return true;
+  if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath))) return true;
   if (!processStartedDuringCycle(item, scope.startedAt)) return false;
   return scope.executablePaths.some(executablePath =>
-    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath)
-      || commandLineReferences(item.commandLine, executablePath));
+    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath));
 }
 
 async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots }) {
@@ -811,7 +800,10 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
     startedAt,
     knownByPid,
     knownPids,
-    executablePaths: [...new Set((executablePaths ?? []).filter(value => typeof value === 'string' && value.length > 0))],
+    executablePaths: [...new Set([
+      ...(executablePaths ?? []),
+      ...(knownProcesses ?? []).map(item => item?.executablePath)
+    ].filter(value => typeof value === 'string' && value.length > 0))],
     tempRoots: [...new Set((tempRoots ?? []).filter(value => typeof value === 'string' && value.length > 0))]
   };
   const deadline = Date.now() + PROCESS_PATH_AUDIT_TIMEOUT_MS;
@@ -820,7 +812,7 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
     while (true) {
       const processes = await windowsProcesses();
       const currentByPid = new Map(processes.filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
-      lastMatches = processes.filter(item => safePid(item?.pid) && isScopedProcess(item, currentByPid, scope));
+      lastMatches = processes.filter(item => safePid(item?.pid) && item.pid !== process.pid && isScopedProcess(item, currentByPid, scope));
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         return { verified: lastMatches.length === 0, pids: lastMatches.map(item => item.pid) };

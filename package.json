@@ -21,9 +21,11 @@
     "test": "vitest run",
     "check": "tsc -p tsconfig.json --noEmit && vitest run",
     "audit:signatures": "npm audit signatures && npm audit signatures --prefix runtime",
-    "build:setup": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && electron-builder --config build/setup.yml --win nsis --x64 --publish never",
-    "build:portable": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && electron-builder --win zip --x64 --publish never",
-    "build:win": "npm run build:setup && npm run build:portable",
+    "package:setup": "electron-builder --config build/setup.yml --win nsis --x64 --publish never",
+    "package:portable": "electron-builder --win zip --x64 --publish never",
+    "build:setup": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run package:setup",
+    "build:portable": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && npm run package:portable",
+    "build:win": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run package:setup && npm run package:portable",
     "sbom": "syft dir:. -o spdx-json=dist/ADHD-One-0.2.0.spdx.json"
   },
   "dependencies": {

@@ -7,8 +7,8 @@ import semver from 'semver';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
-const tag = process.env.GITHUB_REF_NAME ?? 'v0.2.0';
 const appManifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+const tag = process.env.GITHUB_REF_NAME ?? `v${appManifest.version}`;
 const runtimeManifest = JSON.parse(await fs.readFile(path.join(root, 'runtime', 'package-lock.json'), 'utf8'));
 const dshPackage = runtimeManifest.packages['node_modules/@deepseek-ai/dsh'];
 const pnpmPackage = runtimeManifest.packages['node_modules/pnpm'];

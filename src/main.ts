@@ -4,6 +4,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, op
 import os from 'node:os';
 import path from 'node:path';
 import { RuntimeController } from './runtime-controller.js';
+import { createQuitCoordinator } from './quit-coordinator.js';
 import { SettingsStore } from './settings-store.js';
 import { UpdateManager } from './update-manager.js';
 import { ProviderDoctor } from './provider-doctor.js';
@@ -141,25 +142,20 @@ async function main(): Promise<void> {
   harnessSession.on('will-download', event => event.preventDefault());
   app.on('second-instance', () => windows.showControl());
   let quitReady = false;
-  let quitInFlight: Promise<void> | undefined;
+  const quitCoordinator = createQuitCoordinator({
+    runtime,
+    windows,
+    appExit: exitCode => {
+      quitReady = true;
+      app.exit(exitCode);
+    },
+    hardExit: exitCode => process.exit(exitCode)
+  });
+  app.on('quit', () => quitCoordinator.markElectronExited());
   app.on('before-quit', event => {
     if (quitReady) return;
     event.preventDefault();
-    windows.prepareToQuit();
-    quitInFlight ??= Promise.race([
-      runtime.stop().then(() => 0),
-      new Promise<number>(resolve => setTimeout(() => resolve(1), 5_000))
-    ])
-      .catch(() => 1)
-      .then(exitCode => {
-        if (exitCode !== 0) {
-          console.error('RUNTIME_SHUTDOWN_FAILED');
-          runtime.forceShutdown();
-        }
-        windows.destroyForQuit();
-        quitReady = true;
-        app.exit(exitCode);
-      });
+    void quitCoordinator.requestQuit();
   });
 
   if (settings.get().workspace) {

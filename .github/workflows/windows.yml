@@ -17,6 +17,9 @@ jobs:
   build-windows:
     runs-on: windows-2025
     timeout-minutes: 35
+    outputs:
+      setup_artifact_name: ${{ steps.artifact-names.outputs.setup_artifact_name }}
+      portable_artifact_name: ${{ steps.artifact-names.outputs.portable_artifact_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -81,10 +84,18 @@ jobs:
           --output evidence/win-unpacked-launch.json
           --scenario launch
           --cycles 1
+      - name: Freeze build artifact names
+        id: artifact-names
+        shell: pwsh
+        run: |
+          $setup = 'adhd-one-setup-{0}-{1}' -f $env:GITHUB_SHA, $env:GITHUB_RUN_ATTEMPT
+          $portable = 'adhd-one-portable-{0}-{1}' -f $env:GITHUB_SHA, $env:GITHUB_RUN_ATTEMPT
+          "setup_artifact_name=$setup" >> $env:GITHUB_OUTPUT
+          "portable_artifact_name=$portable" >> $env:GITHUB_OUTPUT
       - name: Upload Setup input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact-names.outputs.setup_artifact_name }}
           path: |
             dist/ADHD-One-Setup-*-x64.exe
             dist/latest.yml
@@ -94,7 +105,7 @@ jobs:
       - name: Upload Portable input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact-names.outputs.portable_artifact_name }}
           path: dist/ADHD-One-Portable-*-win-x64.zip
           compression-level: 0
           retention-days: 7
@@ -125,7 +136,7 @@ jobs:
       - name: Download Setup input
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.build-windows.outputs.setup_artifact_name }}
           path: dist
       - name: NSIS installed E2E suite and uninstall residue check
         shell: pwsh
@@ -160,7 +171,7 @@ jobs:
       - name: Download Portable input
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}
+          name: ${{ needs.build-windows.outputs.portable_artifact_name }}
           path: dist
       - name: Portable ZIP launch E2E
         shell: pwsh

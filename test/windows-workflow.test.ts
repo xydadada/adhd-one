@@ -14,8 +14,12 @@ describe('Windows verification workflow', () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow).toMatch(/installed-e2e:\s+needs: build-windows/u);
     expect(workflow).toMatch(/portable-e2e:\s+needs: build-windows/u);
-    expect(workflow).toContain('adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}');
-    expect(workflow).toContain('adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}');
+    expect(workflow).toContain('setup_artifact_name: ${{ steps.artifact-names.outputs.setup_artifact_name }}');
+    expect(workflow).toContain('portable_artifact_name: ${{ steps.artifact-names.outputs.portable_artifact_name }}');
+    expect(workflow).toContain('name: ${{ needs.build-windows.outputs.setup_artifact_name }}');
+    expect(workflow).toContain('name: ${{ needs.build-windows.outputs.portable_artifact_name }}');
+    expect(workflow).toContain('adhd-one-installed-evidence-${{ github.sha }}-${{ github.run_attempt }}');
+    expect(workflow).toContain('adhd-one-portable-evidence-${{ github.sha }}-${{ github.run_attempt }}');
     expect(workflow).toContain('--require-portable');
     expect(workflow).toContain('portableMode=true');
   });

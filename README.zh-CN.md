@@ -5,6 +5,14 @@
 > [!IMPORTANT]
 > 这是社区项目，与 DeepSeek 无隶属、背书或维护关系。
 
+| 兼容性 | 状态 |
+|---|---|
+| Windows 11 x64 | 目标平台；干净 Windows 11 验证尚未完成 |
+| Windows Server 2025 CI | hardened 验证等待下一次完整运行；不能作为 Windows 11 证据 |
+| DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
+| 发布状态 | 正在准备 `v0.2.0-beta.2` 预发布 |
+| 代码签名 | Windows 产物未签名；会触发 SmartScreen 提示 |
+
 统一的实现范围、进度和发布门槛见 [ADHD One v0.2.0 统一主计划](docs/MASTER_PLAN.md)。
 
 ## 为什么叫 ADHD？
@@ -22,26 +30,26 @@
 
 ## 下载
 
-- 稳定版 `v0.1.0`：[ADHD-Setup-0.1.0-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.1.0/ADHD-Setup-0.1.0-x64.exe)（[发布页](https://github.com/xydadada/adhd-one/releases/tag/v0.1.0)）。
-- 预览版 `v0.2.0-beta.1`（预发布）：[安装包](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.1/ADHD-One-Setup-0.2.0-x64.exe) 或 [Portable ZIP](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.1/ADHD-One-Portable-0.2.0-win-x64.zip)（[发布页](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.1)）。
+- 已准备的预发布版 `v0.2.0-beta.2`（[发布页](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2)）：[ADHD-One-Setup-0.2.0-beta.2-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Setup-0.2.0-beta.2-x64.exe)、[ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip) 和 [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt)。这些链接将在 tag/Release 发布后生效。
 
-当前最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 是 prerelease，不能称为 `v0.2.0` 稳定版。
+`beta.2` 由 Release tag 和完整的 `0.2.0-beta.2` 文件名标识。本版本是 prerelease，不能按 `v0.2.0` Stable 说明。
 
-`v0.2.0-beta.1` Windows 产物未签名，SmartScreen 可能显示“未知发布者”。运行预览安装包前请核验 `SHA256SUMS.txt` 或 GitHub Artifact Attestation：
+Windows 产物未签名，SmartScreen 可能显示“未知发布者”。运行安装包前请对照 `SHA256SUMS.txt`，或验证 GitHub Artifact Attestation：
 
 ```powershell
-Get-FileHash .\ADHD-One-Setup-0.2.0-x64.exe -Algorithm SHA256
-gh attestation verify .\ADHD-One-Setup-0.2.0-x64.exe --repo xydadada/adhd-one
+Get-FileHash .\ADHD-One-Setup-0.2.0-beta.2-x64.exe -Algorithm SHA256
+gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one
 ```
 
 首次使用 DSH 时可能需要配置模型服务商或 API Key。密钥由内置的官方 DSH 运行时管理；ADHD One 的诊断只读取“是否已配置”和来源类型，不读取、显示或写入完整密钥。
 
 ## 当前验证状态
 
-- Windows 11 x64：尚未完成干净 Windows 11 环境验证；Windows Server 2025 CI 结果不能当作 Windows 11 结果。
+- Windows Server 2025 CI：hardened 验证等待下一次完整运行；这里不声称最终 hardened 已通过。任何 Server 2025 结果都不能作为 Windows 11 证据。
+- Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
-- Packaged E2E：本地已部分验证。最终 Portable EXE 已分别通过启动、强杀恢复、官方 mock Provider 与 PowerShell tool-call，并确认进程树清空；十次循环和隔离的 NSIS 安装/卸载门仍需在 push 后通过。
-- 当前本地证据：`npm run check` 通过（20 个 test files/201 个 tests），JavaScript 语法门通过 20 个文件，`npm run test:doctor` 通过（20/20），真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。Setup 为 144.04 MiB；打包后二进制正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过且无残留 PID。workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。这些结果仍不代表 Windows 11、Stable、性能或完整安装后 Release E2E 已完成。
+- Packaged E2E：本地启动、强杀、workspace-write 和 Portable 检查已通过，并确认进程树清空；这些本地检查不是最终 hardened CI 证据。
+- 当前本地证据：`npm run check` 通过（24 个 test files/232 个 tests），JavaScript 语法门通过 21 个文件，`npm run test:doctor` 通过（20/20），真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。Setup 为 144.04 MiB；打包后二进制正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过且无残留 PID。workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。这些结果仍不代表 Windows 11、Stable、性能或完整安装后 Release E2E 已完成。
 
 ## 本地开发
 

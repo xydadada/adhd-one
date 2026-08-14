@@ -330,6 +330,22 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:BUILD_VERSION) -or $env:BUILD_VERSION -ne $packageVersion) {
             throw "Build job version $env:BUILD_VERSION does not match publish version $packageVersion"
           }
+          $notesPath = 'RELEASE_NOTES.md'
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw 'Missing RELEASE_NOTES.md'
+          }
+          $firstHeading = $null
+          foreach ($line in Get-Content -LiteralPath $notesPath) {
+            if ($line -match '^\s{0,3}#{1,6}\s+\S') {
+              $firstHeading = [string]$line
+              break
+            }
+          }
+          $releaseIdentityPattern = '(?<![0-9A-Za-z-])(?:' + [regex]::Escape($env:RELEASE_TAG) + '|' + [regex]::Escape($packageVersion) + ')(?![0-9A-Za-z-])'
+          if ([string]::IsNullOrWhiteSpace($firstHeading) -or
+              -not [regex]::IsMatch($firstHeading, $releaseIdentityPattern, $regexOptions)) {
+            throw "The first RELEASE_NOTES.md heading must contain the complete release tag/version: $env:RELEASE_TAG"
+          }
           "version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Download one controlled release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -354,6 +370,22 @@ jobs:
             throw 'Downloaded artifact is missing runtime-manifest.json'
           }
           $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+          $dshVersionText = [string]$manifest.runtime.version
+          if ([string]::IsNullOrWhiteSpace($dshVersionText)) {
+            throw 'runtime-manifest.json runtime.version is missing'
+          }
+          try {
+            $appSemVer = [semver]$env:RELEASE_VERSION
+            $dshSemVer = [semver]$dshVersionText
+          } catch {
+            throw "Release identity contains invalid SemVer: app=$env:RELEASE_VERSION dsh=$dshVersionText"
+          }
+          $manifestChannel = [string]$manifest.channel
+          if ([string]::IsNullOrWhiteSpace($appSemVer.PreReleaseLabel) -and
+              ($manifestChannel -ne 'stable' -or
+               -not [string]::IsNullOrWhiteSpace($dshSemVer.PreReleaseLabel))) {
+            throw "Stable app $env:RELEASE_TAG cannot publish runtime channel=$manifestChannel with DSH version $dshVersionText"
+          }
           $runtimeName = [string]$manifest.asset.name
           if ([string]::IsNullOrWhiteSpace($runtimeName) -or
               [System.IO.Path]::GetFileName($runtimeName) -ne $runtimeName -or

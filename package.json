@@ -1,6 +1,6 @@
 {
   "name": "adhd-one",
-  "version": "0.2.0",
+  "version": "0.2.0-beta.2",
   "description": "An unofficial, batteries-included Windows desktop for DeepSeek Harness.",
   "type": "module",
   "main": "out/main.js",
@@ -30,6 +30,7 @@
     "smoke:runtime-staging": "node scripts/smoke-runtime-staging.mjs",
     "verify:fuses": "node scripts/verify-fuses.mjs",
     "verify:package-closure": "node scripts/verify-package-closure.mjs",
+    "verify:evidence": "node scripts/verify-evidence.mjs",
     "license:closure": "node scripts/generate-license-closure.mjs",
     "license:closure:check": "node scripts/generate-license-closure.mjs --check",
     "license:closure:gate": "npm run license:closure && npm run license:closure:check",
@@ -42,7 +43,7 @@
     "build:setup": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared",
     "build:portable": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:portable:prepared",
     "build:win": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared && npm run package:portable:prepared",
-    "sbom": "syft dir:. -o spdx-json=dist/ADHD-One-0.2.0.spdx.json"
+    "sbom": "syft dir:. -o spdx-json=dist/ADHD-One-0.2.0-beta.2.spdx.json"
   },
   "dependencies": {
     "@deepseek-ai/dsh-llm-mock-server": "0.1.0-rc.6",

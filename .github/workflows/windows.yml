@@ -14,9 +14,9 @@ permissions:
   contents: read
 
 jobs:
-  test-and-package:
+  build-windows:
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -81,6 +81,52 @@ jobs:
           --output evidence/win-unpacked-launch.json
           --scenario launch
           --cycles 1
+      - name: Upload Setup input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            dist/ADHD-One-Setup-*-x64.exe
+            dist/latest.yml
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload Portable input
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/ADHD-One-Portable-*-win-x64.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload build evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: adhd-one-build-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/win-unpacked-launch.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  installed-e2e:
+    needs: build-windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Download Setup input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: adhd-one-setup-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist
       - name: NSIS installed E2E suite and uninstall residue check
         shell: pwsh
         run: |
@@ -88,8 +134,35 @@ jobs:
           ./scripts/e2e/installed.ps1 `
             -SetupPath "dist/ADHD-One-Setup-$($package.version)-x64.exe" `
             -EvidenceDirectory evidence/installed
-      - name: Portable ZIP launch E2E
+      - name: Upload installed evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
+        with:
+          name: adhd-one-installed-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/installed/*.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  portable-e2e:
+    needs: build-windows
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Download Portable input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: adhd-one-portable-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist
+      - name: Portable ZIP launch E2E
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -108,13 +181,27 @@ jobs:
             --scenario launch `
             --cycles 1
           if ($LASTEXITCODE -ne 0) { throw "Portable launch E2E failed with exit code $LASTEXITCODE" }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - name: Upload Portable evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ADHD-One-Windows-x64
-          path: |
-            dist/ADHD-One-Setup-*-x64.exe
-            dist/ADHD-One-Portable-*-win-x64.zip
-            dist/latest.yml
-            evidence/**/*.json
+          name: adhd-one-portable-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/portable-launch.json
+          retention-days: 30
           if-no-files-found: warn
+
+  test-and-package:
+    if: always()
+    needs: [build-windows, installed-e2e, portable-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every Windows verification job
+        env:
+          BUILD_RESULT: ${{ needs.build-windows.result }}
+          INSTALLED_RESULT: ${{ needs.installed-e2e.result }}
+          PORTABLE_RESULT: ${{ needs.portable-e2e.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$INSTALLED_RESULT" = success
+          test "$PORTABLE_RESULT" = success

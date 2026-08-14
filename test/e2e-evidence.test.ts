@@ -3,12 +3,22 @@ import {
   cdpClosed,
   isValidCdpWebSocketUrl,
   sanitizeEvidence,
+  shouldCopyPortableEntry,
   stableErrorCode,
   stableStageErrorCode,
   waitForCdp
 } from '../scripts/e2e/packaged.mjs';
 
 describe('packaged E2E evidence safety', () => {
+  it('never copies existing portable user data into a clean E2E app clone', () => {
+    const root = 'C:\\portable\\ADHD-One';
+    expect(shouldCopyPortableEntry(root, root)).toBe(true);
+    expect(shouldCopyPortableEntry(root, `${root}\\resources\\portable.marker`)).toBe(true);
+    expect(shouldCopyPortableEntry(root, `${root}\\portable-data`)).toBe(false);
+    expect(shouldCopyPortableEntry(root, `${root}\\portable-data\\settings.json`)).toBe(false);
+    expect(shouldCopyPortableEntry(root, `${root}\\portable-data-backup\\settings.json`)).toBe(true);
+  });
+
   it('keeps only the evidence allowlist and never serializes raw output or paths', () => {
     const value = sanitizeEvidence({
       generatedAt: '2026-08-14T00:00:00.000Z',

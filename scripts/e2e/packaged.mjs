@@ -671,6 +671,12 @@ function isInside(root, candidate) {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+export function shouldCopyPortableEntry(sourceRoot, source) {
+  const portableData = path.join(path.resolve(sourceRoot), 'portable-data');
+  const candidate = path.resolve(source);
+  return candidate !== portableData && !candidate.startsWith(`${portableData}${path.sep}`);
+}
+
 async function windowsProcesses() {
   const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate | ConvertTo-Json -Compress";
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
@@ -744,14 +750,19 @@ async function forceKillApplication(child, exitPromise) {
 
 async function terminateApplication(child, exitPromise, browser, control, scenario = 'launch') {
   if (scenario === 'force-kill') return forceKillApplication(child, exitPromise);
-  if (control && !control.isClosed()) {
-    try { await withTimeout(control.evaluate(() => window.adhdOne.quitApp()), 3_000, 'APP_QUIT'); } catch { /* the renderer may disappear after accepting quit */ }
+  let quitAccepted = false;
+  for (let attempt = 0; attempt < 2 && control && !control.isClosed() && !quitAccepted; attempt += 1) {
+    try {
+      const response = await withTimeout(control.evaluate(() => window.adhdOne.quitApp()), 3_000, 'APP_QUIT');
+      quitAccepted = response?.accepted === true;
+    } catch { /* The renderer may disappear after accepting quit. */ }
+    if (!quitAccepted && control && !control.isClosed()) await delay(200);
   }
-  if (await exitedWithin(exitPromise, GRACEFUL_EXIT_TIMEOUT_MS)) return { forcedTermination: false, forceKillVerified: false };
+  if (await exitedWithin(exitPromise, GRACEFUL_EXIT_TIMEOUT_MS)) return { forcedTermination: false, forceKillVerified: false, quitAccepted };
   let forceKilled = false;
   try { forceKilled = child.kill('SIGKILL'); } catch { forceKilled = false; }
   await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
-  return { forcedTermination: forceKilled, forceKillVerified: false };
+  return { forcedTermination: forceKilled, forceKillVerified: false, quitAccepted };
 }
 
 async function prepareRun() {
@@ -1062,8 +1073,14 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
     const portableMarker = path.join(path.dirname(executable), 'resources', 'portable.marker');
     const portableMode = await stat(portableMarker).then(value => value.isFile()).catch(() => false);
     if (portableMode) {
+      const sourceRoot = path.dirname(executable);
       const portableRoot = path.join(prepared.root, 'portable-app');
-      await cp(path.dirname(executable), portableRoot, { recursive: true, force: false, errorOnExist: true });
+      await cp(sourceRoot, portableRoot, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        filter: source => shouldCopyPortableEntry(sourceRoot, source)
+      });
       launchExecutable = path.join(portableRoot, path.basename(executable));
       const portableData = path.join(portableRoot, 'portable-data');
       await mkdir(portableData, { recursive: true });
@@ -1134,6 +1151,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
       const termination = await terminateApplication(child, exitPromise, browser, control, scenario);
       record.forcedTermination = termination.forcedTermination;
       record.forceKillVerified = termination.forceKillVerified;
+      if (record.forcedTermination && termination.quitAccepted === false) record.errorCode ??= 'APP_QUIT_REQUEST_FAILED';
     }
     if (record.forcedTermination && scenario === 'launch') {
       record.passed = false;
@@ -1153,10 +1171,15 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
       record.processTreeCount = launchedTree.length;
     }
     if (launchedTree.length) {
-      const remaining = await waitForProcessesGone(launchedTree);
-      record.remainingPids = remaining.map(item => item.pid);
-      record.runtimePidExited = !remaining.some(item => item.pid === record.runtimePid);
-      record.processTreeExited = remaining.length === 0;
+      try {
+        const remaining = await waitForProcessesGone(launchedTree);
+        record.remainingPids = remaining.map(item => item.pid);
+        record.runtimePidExited = !remaining.some(item => item.pid === record.runtimePid);
+        record.processTreeExited = remaining.length === 0;
+      } catch (error) {
+        record.errorCode ??= stableStageErrorCode(error, 'PROCESS_TREE_AUDIT_FAILED', 'PROCESS_TREE_AUDIT_TIMEOUT');
+        record.passed = false;
+      }
     }
     if (record.cdpPort) record.cdpClosed = await cdpClosed(record.cdpPort);
     record.exitVerified = scenario === 'force-kill'
@@ -1176,7 +1199,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch') {
     }
     if (prepared) {
       try {
-        await rm(prepared.root, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+        await rm(prepared.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
         record.cleanup = 'removed';
         record.cleanupVerified = true;
       } catch (error) {

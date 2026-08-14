@@ -42,13 +42,12 @@ function hasWindowsAmbiguousComponent(value: string): boolean {
 function canonicalPath(value: string): string {
   const api = pathApi(value);
   const resolved = api.resolve(value);
-  if (api === path.posix) return resolved;
   const normalized = api.normalize(resolved);
-  const parsed = path.win32.parse(normalized);
-  const components = normalized.slice(parsed.root.length).split('\\').filter(Boolean)
+  const parsed = api.parse(normalized);
+  const components = normalized.slice(parsed.root.length).split(api.sep).filter(Boolean)
     .map(component => component.replace(/[. ]+$/u, '').toLowerCase())
     .filter(Boolean);
-  return `${parsed.root.toLowerCase()}${components.join('\\')}`;
+  return `${parsed.root.toLowerCase()}${components.join(api.sep)}`;
 }
 
 function isCanonicalPathInside(root: string, candidate: string): boolean {

@@ -161,7 +161,7 @@ describe('SettingsStore', () => {
 
     const snapshot = store.get();
     expect(snapshot.locale).toBe('en-US');
-    await expect(realpath(snapshot.workspace!)).resolves.toBe(await realpath(workspace));
+    expect(snapshot.workspace).toBe(await realpath(workspace));
   });
 
   it('reports both corrupt settings files without writing defaults or exposing a path', async () => {

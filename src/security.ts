@@ -36,8 +36,10 @@ export function allowedExternalUrl(candidate: string): URL | undefined {
 }
 
 export function isPathInside(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  const windowsPath = [root, candidate].some(value => /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('\\\\'));
+  const api = windowsPath ? path.win32 : path.posix;
+  const relative = api.relative(api.resolve(root), api.resolve(candidate));
+  return relative === '' || (!relative.startsWith(`..${api.sep}`) && relative !== '..' && !api.isAbsolute(relative));
 }
 
 export function redactText(value: string): string {

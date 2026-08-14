@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -159,7 +159,9 @@ describe('SettingsStore', () => {
 
     await Promise.all([store.setWorkspace(workspace), store.update({ locale: 'en-US' })]);
 
-    expect(store.get()).toMatchObject({ workspace, locale: 'en-US' });
+    const snapshot = store.get();
+    expect(snapshot.locale).toBe('en-US');
+    await expect(realpath(snapshot.workspace!)).resolves.toBe(await realpath(workspace));
   });
 
   it('reports both corrupt settings files without writing defaults or exposing a path', async () => {

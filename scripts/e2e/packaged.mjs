@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { randomBytes } from 'node:crypto';
 import { createConnection, createServer, isIP } from 'node:net';
 import { execFile, spawn } from 'node:child_process';

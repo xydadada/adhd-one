@@ -20,8 +20,15 @@ export type RuntimeCommitState = Record<string, unknown>;
 
 const runtimeCommitStateSchema = z.record(z.string(), z.unknown());
 
+function usesWindowsPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('\\\\');
+}
+
+function pathApi(...values: string[]) {
+  return values.some(usesWindowsPath) ? path.win32 : path.posix;
+}
+
 function hasWindowsAmbiguousComponent(value: string): boolean {
-  if (process.platform !== 'win32') return false;
   const normalized = value.replaceAll('/', '\\');
   const root = path.win32.parse(normalized).root;
   return normalized.slice(root.length).split('\\').some(part => part.length > 0
@@ -33,9 +40,10 @@ function hasWindowsAmbiguousComponent(value: string): boolean {
  * spaces in each component. Keep the returned path lexical: it may not exist.
  */
 function canonicalPath(value: string): string {
-  const resolved = path.resolve(value);
-  if (process.platform !== 'win32') return resolved;
-  const normalized = path.win32.normalize(resolved);
+  const api = pathApi(value);
+  const resolved = api.resolve(value);
+  if (api === path.posix) return resolved;
+  const normalized = api.normalize(resolved);
   const parsed = path.win32.parse(normalized);
   const components = normalized.slice(parsed.root.length).split('\\').filter(Boolean)
     .map(component => component.replace(/[. ]+$/u, '').toLowerCase())
@@ -44,12 +52,11 @@ function canonicalPath(value: string): string {
 }
 
 function isCanonicalPathInside(root: string, candidate: string): boolean {
+  const api = pathApi(root, candidate);
   const resolvedRoot = canonicalPath(root);
   const resolvedCandidate = canonicalPath(candidate);
-  const relative = process.platform === 'win32'
-    ? path.win32.relative(resolvedRoot, resolvedCandidate)
-    : path.relative(resolvedRoot, resolvedCandidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  const relative = api.relative(resolvedRoot, resolvedCandidate);
+  return relative === '' || (!relative.startsWith(`..${api.sep}`) && relative !== '..' && !api.isAbsolute(relative));
 }
 
 function isRestrictedRelativePath(value: string): boolean {
@@ -169,16 +176,18 @@ function pathError(field: string): Error {
 
 function resolveRestrictedPath(root: string, value: string, field: string): string {
   if (!isRestrictedRelativePath(value)) throw pathError(field);
-  const candidate = path.resolve(root, ...value.replaceAll('\\', '/').split('/'));
+  const api = pathApi(root);
+  const candidate = api.resolve(root, ...value.replaceAll('\\', '/').split('/'));
   if (!isCanonicalPathInside(root, candidate) || pathsEqual(root, candidate)) throw pathError(field);
   return candidate;
 }
 
 function protectedRuntimeDirectories(root: string): string[] {
+  const api = pathApi(root);
   return [
-    path.resolve(root, 'bundled'),
-    path.resolve(root, 'slot-A'),
-    path.resolve(root, 'slot-B')
+    api.resolve(root, 'bundled'),
+    api.resolve(root, 'slot-A'),
+    api.resolve(root, 'slot-B')
   ];
 }
 
@@ -196,12 +205,13 @@ export function resolveRuntimeCommitPaths(
   const journal = parseRuntimeCommitJournal(value);
   if (typeof runtimeRoot !== 'string' || runtimeRoot.length === 0) throw pathError('runtimeRoot');
   if (runtimeRoot.includes('\0') || hasWindowsAmbiguousComponent(runtimeRoot)) throw pathError('runtimeRoot');
-  const root = path.resolve(runtimeRoot);
+  const api = pathApi(runtimeRoot);
+  const root = api.resolve(runtimeRoot);
   const stagingRoot = resolveRestrictedPath(root, journal.stagingRoot, 'stagingRoot');
   const destination = resolveRestrictedPath(root, journal.destination, 'destination');
   const backup = resolveRestrictedPath(root, journal.backup, 'backup');
 
-  const expectedDestination = path.resolve(root, `slot-${journal.slot}`);
+  const expectedDestination = api.resolve(root, `slot-${journal.slot}`);
   if (journal.destination !== `slot-${journal.slot}` || !pathsEqual(destination, expectedDestination)) {
     throw pathError('destination');
   }
@@ -284,8 +294,9 @@ function controlPath(root: string, value: string, field: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0') || hasWindowsAmbiguousComponent(value)) {
     throw pathError(field);
   }
-  const candidate = path.isAbsolute(value)
-    ? path.resolve(value)
+  const api = pathApi(root, value);
+  const candidate = api.isAbsolute(value)
+    ? api.resolve(value)
     : resolveRestrictedPath(root, value, field);
   if (!isCanonicalPathInside(root, candidate) || pathsEqual(root, candidate)) throw pathError(field);
   return candidate;

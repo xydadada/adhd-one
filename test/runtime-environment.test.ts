@@ -112,7 +112,8 @@ describe('RuntimeController environment construction', () => {
           ADHD_PORT: '9999'
         }
       }));
-      const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows';
+      const inheritedSystemRoot = process.env.SystemRoot ?? process.env.windir;
+      const systemRoot = inheritedSystemRoot ?? 'C:\\Windows';
 
       for (const key of [
         'HOME', 'APPDATA', 'LOCALAPPDATA', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
@@ -121,7 +122,12 @@ describe('RuntimeController environment construction', () => {
         'DEEPSEEK_API_KEY', 'OPENAI_API_KEY'
       ]) expect(environment[key]).toBeUndefined();
 
-      expect(environment.SystemRoot ?? environment.windir).toBe(systemRoot);
+      if (inheritedSystemRoot === undefined) {
+        expect(environment.SystemRoot).toBeUndefined();
+        expect(environment.windir).toBeUndefined();
+      } else {
+        expect(environment.SystemRoot ?? environment.windir).toBe(inheritedSystemRoot);
+      }
       expect(environment.PATH).toBe([
         runtimeInput.binPath,
         path.win32.dirname(runtimeInput.node),

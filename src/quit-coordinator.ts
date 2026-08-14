@@ -1,7 +1,9 @@
 /** Coordinates the bounded shutdown path without depending on Electron globals. */
 
 export const RUNTIME_STOP_TIMEOUT_MS = 5_000;
-export const HARD_EXIT_DELAY_MS = 250;
+// Give Electron subprocesses time to observe app.exit() before the last-resort
+// process.exit(); the fallback still remains well below the five-second cap.
+export const HARD_EXIT_DELAY_MS = 1_000;
 
 const MAX_HARD_EXIT_DELAY_MS = 5_000;
 

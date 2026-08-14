@@ -122,6 +122,6 @@ describe('QuitCoordinator', () => {
     const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 
     expect(source).not.toContain('quitCoordinator.markElectronExited()');
-    expect(source).toContain('keep the 250ms hard-exit fallback armed');
+    expect(source).toContain('keep the bounded hard-exit fallback armed');
   });
 });

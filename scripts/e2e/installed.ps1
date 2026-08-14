@@ -21,7 +21,11 @@ function Get-AdhdUninstallRecords {
   )) {
     if (-not (Test-Path -LiteralPath $root)) { continue }
     foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction Stop)) {
-      $value = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+      try { $value = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop }
+      catch {
+        if (-not (Test-Path -LiteralPath $key.PSPath)) { continue }
+        throw
+      }
       if ($null -ne $value -and [string]$value.DisplayName -like 'ADHD One*') {
         [pscustomobject]@{
           Key = $key.PSPath
@@ -59,7 +63,11 @@ function Get-InstallProcesses([string]$Root) {
 function Get-InstallMarkers([string]$Root) {
   $expected = ([IO.Path]::GetFullPath($Root)).TrimEnd('\')
   foreach ($key in @(Get-ChildItem -LiteralPath 'HKCU:\Software' -ErrorAction Stop)) {
-    $value = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+    try { $value = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop }
+    catch {
+      if (-not (Test-Path -LiteralPath $key.PSPath)) { continue }
+      throw
+    }
     if ($value.PSObject.Properties.Name -contains 'InstallLocation' -and [string]$value.InstallLocation -and
         ([IO.Path]::GetFullPath([string]$value.InstallLocation)).TrimEnd('\') -ieq $expected) { $key.PSPath }
   }

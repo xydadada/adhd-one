@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     },
     hardExit: exitCode => process.exit(exitCode)
   });
-  // app.exit() may emit "quit" before the OS process is gone; keep the 250ms hard-exit fallback armed.
+  // app.exit() may emit "quit" before the OS process is gone; keep the bounded hard-exit fallback armed.
   app.on('before-quit', event => {
     quitState.beginQuit();
     if (quitReady) return;

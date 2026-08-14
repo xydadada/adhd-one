@@ -153,6 +153,11 @@ describe('installed E2E script contracts', () => {
     expect(verifierScript.slice(allowlistStart, allowlistEnd)).toContain("'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'");
   });
 
+  it('tolerates NSIS registry keys disappearing while cleanup is enumerating them', async () => {
+    const script = await readFile(installedScriptPath, 'utf8');
+    expect(script.match(/if \(-not \(Test-Path -LiteralPath \$key\.PSPath\)\) \{ continue \}/gu)).toHaveLength(2);
+  });
+
   it('validates one or more strict portable launch evidence files through the API and CLI', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-portable-evidence-'));
     temporaryRoots.push(root);

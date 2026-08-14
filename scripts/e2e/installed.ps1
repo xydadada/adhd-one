@@ -26,11 +26,26 @@ function Get-AdhdUninstallRecords {
         [pscustomobject]@{
           Key = $key.PSPath
           InstallLocation = [string]$value.InstallLocation
+          UninstallString = [string]$value.UninstallString
           QuietUninstallString = [string]$value.QuietUninstallString
         }
       }
     }
   }
+}
+
+function Test-UninstallCommandTargets([string]$Command, [string]$Executable) {
+  if ([string]::IsNullOrWhiteSpace($Command)) { return $false }
+  $expanded = [Environment]::ExpandEnvironmentVariables($Command).Trim()
+  $expected = [IO.Path]::GetFullPath($Executable)
+  if ($expanded.StartsWith('"')) {
+    $closingQuote = $expanded.IndexOf('"', 1)
+    if ($closingQuote -lt 2) { return $false }
+    $candidate = $expanded.Substring(1, $closingQuote - 1)
+    return ([IO.Path]::GetFullPath($candidate) -ieq $expected)
+  }
+  return $expanded.StartsWith($expected, [StringComparison]::OrdinalIgnoreCase) -and
+    ($expanded.Length -eq $expected.Length -or [char]::IsWhiteSpace($expanded[$expected.Length]))
 }
 
 function Get-InstallProcesses([string]$Root) {
@@ -78,6 +93,10 @@ $registryClean = $false
 $shortcutsClean = $false
 $shortcutsCreated = $false
 $uninstallExitCode = $null
+$uninstallRecordCount = 0
+$matchingUninstallRecordCount = 0
+$installLocationRecordMatched = $false
+$uninstallCommandRecordMatched = $false
 try {
   if (@(Get-AdhdUninstallRecords).Count -ne 0) { throw 'INSTALLED_E2E_PREEXISTING_INSTALL' }
   if (@($shortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -ne 0) { throw 'INSTALLED_E2E_PREEXISTING_SHORTCUT' }
@@ -96,13 +115,30 @@ try {
   if (Test-Path -LiteralPath (Join-Path $installRoot 'resources\dsh-runtime.7z')) {
     throw 'INSTALLED_E2E_RUNTIME_ARCHIVE_REMAINED'
   }
-  $records = @(Get-AdhdUninstallRecords | Where-Object {
-    $_.InstallLocation -and ([IO.Path]::GetFullPath($_.InstallLocation)).TrimEnd('\') -ieq ([IO.Path]::GetFullPath($installRoot)).TrimEnd('\')
+  $expectedInstallRoot = ([IO.Path]::GetFullPath($installRoot)).TrimEnd('\')
+  $allRecords = @(Get-AdhdUninstallRecords)
+  $uninstallRecordCount = $allRecords.Count
+  $installLocationRecords = @($allRecords | Where-Object {
+    $_.InstallLocation -and ([IO.Path]::GetFullPath($_.InstallLocation)).TrimEnd('\') -ieq $expectedInstallRoot
   })
+  $commandRecords = @($allRecords | Where-Object {
+    (Test-UninstallCommandTargets $_.UninstallString $uninstaller) -or
+    (Test-UninstallCommandTargets $_.QuietUninstallString $uninstaller)
+  })
+  $installLocationRecordMatched = $installLocationRecords.Count -gt 0
+  $uninstallCommandRecordMatched = $commandRecords.Count -gt 0
+  $records = @($allRecords | Where-Object {
+    ($_.InstallLocation -and ([IO.Path]::GetFullPath($_.InstallLocation)).TrimEnd('\') -ieq $expectedInstallRoot) -or
+    (Test-UninstallCommandTargets $_.UninstallString $uninstaller) -or
+    (Test-UninstallCommandTargets $_.QuietUninstallString $uninstaller)
+  })
+  $matchingUninstallRecordCount = $records.Count
   # NSIS may expose the same per-user ARP entry through more than one registry
   # view, and electron-builder does not guarantee a particular uninstall-string
   # spelling. The durable contract is an ARP record for this exact install plus
-  # the official uninstaller discovered inside that install directory.
+  # the official uninstaller discovered inside that install directory. Some
+  # electron-builder NSIS records omit InstallLocation, so an exact command
+  # target is an equivalent identity check.
   if ($records.Count -lt 1) {
     throw 'INSTALLED_E2E_UNINSTALL_RECORD_INVALID'
   }
@@ -182,6 +218,10 @@ try {
     uninstallAttempted = $uninstallAttempted
     uninstallSucceeded = $uninstallSucceeded
     uninstallExitCode = $uninstallExitCode
+    uninstallRecordCount = $uninstallRecordCount
+    matchingUninstallRecordCount = $matchingUninstallRecordCount
+    installLocationRecordMatched = $installLocationRecordMatched
+    uninstallCommandRecordMatched = $uninstallCommandRecordMatched
     installDirectoryRemoved = $installDirectoryRemoved
     processClean = $processClean
     registryClean = $registryClean

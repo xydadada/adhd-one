@@ -10,7 +10,7 @@ ADHD One 是非官方社区桌面客户端，内置官方 `@deepseek-ai/dsh 0.1.
 gh attestation verify ADHD-One-Setup-0.2.0-x64.exe --repo xydadada/adhd-one
 ```
 
-正式支持 Windows 11 x64。此项目与 DeepSeek 无隶属或背书关系。
+目标平台为 Windows 11 x64；在干净 Windows 11 VM 的 RC 验证完成前，本版本仅作为预发布构建。此项目与 DeepSeek 无隶属或背书关系。
 
 ## English
 
@@ -18,4 +18,4 @@ ADHD One is an unofficial community desktop client bundling the official `@deeps
 
 **Unsigned Windows build:** SmartScreen may display “Unknown publisher”. Verify `SHA256SUMS.txt` or the GitHub Artifact Attestation before running the installer.
 
-Windows 11 x64 is the only supported platform. This project is not affiliated with or endorsed by DeepSeek.
+Windows 11 x64 is the target platform. Until the RC passes validation in a clean Windows 11 VM, this build remains a prerelease. This project is not affiliated with or endorsed by DeepSeek.

@@ -1,4 +1,4 @@
-import { access, readFile, stat } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +8,12 @@ const PACKAGED_FILES = Object.freeze([
   Object.freeze({ name: 'workspace-write-1.json', scenario: 'workspace-write', cycles: 1 }),
   Object.freeze({ name: 'launch-10.json', scenario: 'launch', cycles: 10 })
 ]);
+const INSTALLED_SUMMARY_FILE = 'installed-summary.json';
+const EVIDENCE_FILE_NAMES = Object.freeze([
+  ...PACKAGED_FILES.map(file => file.name),
+  INSTALLED_SUMMARY_FILE
+]);
+const EVIDENCE_FILE_NAME_SET = new Set(EVIDENCE_FILE_NAMES);
 
 const TOP_KEYS = new Set([
   'schemaVersion', 'tool', 'generatedAt', 'executable', 'scenario', 'portableMode',
@@ -55,10 +61,13 @@ const CYCLE_BOOLEAN_KEYS = [
   'finalScopedProcessAuditPassed', 'workspaceWriteVerified'
 ];
 
-const CYCLE_NUMBER_KEYS = [
-  'launchMs', 'controlWindowMs', 'runtimeReadyMs', 'exitMs', 'pid', 'cdpPort',
-  'runtimePid', 'processTreeCount', 'finalScopedProcessAuditCount', 'stdoutBytes',
-  'stderrBytes'
+const POSITIVE_CYCLE_NUMBER_KEYS = [
+  'pid', 'runtimePid', 'cdpPort', 'processTreeCount'
+];
+
+const NON_NEGATIVE_CYCLE_NUMBER_KEYS = [
+  'launchMs', 'controlWindowMs', 'runtimeReadyMs', 'exitMs',
+  'finalScopedProcessAuditCount', 'stdoutBytes', 'stderrBytes'
 ];
 
 const WORKSPACE_BOOLEAN_KEYS = [
@@ -68,7 +77,146 @@ const WORKSPACE_BOOLEAN_KEYS = [
 ];
 
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{1,63}$/u;
-const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const PRODUCTION_ERROR_CODES = new Set([
+  'ACCESS_DENIED',
+  'APPDATA_ISOLATION_FAILED',
+  'APPLICATION_DID_NOT_EXIT_GRACEFULLY',
+  'APPLICATION_EXITED_BEFORE_CDP',
+  'APPLICATION_EXITED_BEFORE_CONTROL_WINDOW',
+  'APPLICATION_EXITED_BY_SIGNAL',
+  'APPLICATION_EXITED_WHILE_WAITING_FOR_READY',
+  'APPLICATION_FORCE_KILL_FAILED',
+  'APPLICATION_GRACEFUL_EXIT_FAILED',
+  'APPLICATION_PROCESS_REMAINED',
+  'APP_QUIT_NOT_ACCEPTED',
+  'APP_QUIT_REQUEST_FAILED',
+  'CDP_CONNECT_FAILED',
+  'CDP_CONNECT_TIMEOUT',
+  'CDP_DISCOVERY_TIMEOUT',
+  'CDP_REMAINED_OPEN',
+  'CLEANUP_FAILED',
+  'CLEANUP_ROOT_MISSING_BEFORE_RM',
+  'CLEANUP_ROOT_NOT_DIRECTORY',
+  'CLEANUP_ROOT_REAPPEARED',
+  'CLEANUP_ROOT_REMAINS',
+  'CLEANUP_ROOT_STAT_FAILED',
+  'CLEANUP_ROOT_STAT_TIMEOUT',
+  'CLEANUP_ROOT_UNEXPECTED',
+  'CLEANUP_TIMEOUT',
+  'CONTROL_WINDOW_CLOSED_BEFORE_READY',
+  'CONTROL_WINDOW_FAILED',
+  'CONTROL_WINDOW_TIMEOUT',
+  'E2E_CYCLE_FAILED',
+  'E2E_CYCLE_TIMEOUT',
+  'E2E_ERROR',
+  'E2E_MAIN_FAILED',
+  'E2E_MAIN_TIMEOUT',
+  'E2E_TIMEOUT',
+  'EADDRINUSE',
+  'ECONNREFUSED',
+  'ENOENT',
+  'ENOTDIR',
+  'EXE_NOT_FOUND',
+  'HOST_DESCRIBE_FAILED',
+  'HOST_DESCRIBE_HTTP_ERROR',
+  'HOST_DESCRIBE_RESPONSE_INVALID',
+  'HOST_DESCRIBE_TIMEOUT',
+  'INVALID_ARGUMENT',
+  'INSTALLED_E2E_FAILED',
+  'INSTALLED_E2E_INSTALL_DIRECTORY_REMAINED',
+  'INSTALLED_E2E_INSTALL_FAILED',
+  'INSTALLED_E2E_INSTALL_TIMEOUT',
+  'INSTALLED_E2E_INSTALL_MARKER_REMAINED',
+  'INSTALLED_E2E_LAYOUT_INVALID',
+  'INSTALLED_E2E_PACKAGED_SUITE_FAILED',
+  'INSTALLED_E2E_PREEXISTING_INSTALL',
+  'INSTALLED_E2E_PREEXISTING_SHORTCUT',
+  'INSTALLED_E2E_PROCESS_AUDIT_FAILED',
+  'INSTALLED_E2E_PROCESS_REMAINED',
+  'INSTALLED_E2E_PROCESS_REMAINED_AFTER_UNINSTALL',
+  'INSTALLED_E2E_REGISTRY_AUDIT_FAILED',
+  'INSTALLED_E2E_REGISTRY_REMAINED',
+  'INSTALLED_E2E_RUNTIME_ARCHIVE_REMAINED',
+  'INSTALLED_E2E_RUNTIME_NOT_EXPANDED',
+  'INSTALLED_E2E_SETUP_MISSING',
+  'INSTALLED_E2E_SHELL_FOLDER_UNAVAILABLE',
+  'INSTALLED_E2E_SHORTCUT_CREATION_INVALID',
+  'INSTALLED_E2E_SHORTCUT_REMAINED',
+  'INSTALLED_E2E_UNINSTALLER_AMBIGUOUS',
+  'INSTALLED_E2E_UNINSTALLER_DISCOVERY_FAILED',
+  'INSTALLED_E2E_UNINSTALLER_MISSING',
+  'INSTALLED_E2E_UNINSTALL_FAILED',
+  'INSTALLED_E2E_UNINSTALL_RECORD_INVALID',
+  'INSTALLED_E2E_UNINSTALL_TIMEOUT',
+  'INSTALLED_E2E_UNSAFE_NSiS_PATH',
+  'LOOPBACK_PORT_ALLOCATION_FAILED',
+  'MOCK_CLOSE_FAILED',
+  'MOCK_CLOSE_TIMEOUT',
+  'NETWORK_ERROR',
+  'NOT_FOUND',
+  'PACKAGED_E2E_IS_WINDOWS_ONLY',
+  'PORTABLE_MARKER_COPY_FAILED',
+  'PORTABLE_MARKER_MISSING',
+  'PROCESS_EXIT_FAILED',
+  'PROCESS_EXIT_TIMEOUT',
+  'PROCESS_PATH_AUDIT_FAILED',
+  'PROCESS_PATH_AUDIT_FOUND',
+  'PROCESS_PATH_AUDIT_TIMEOUT',
+  'PROCESS_TREE_AUDIT_FAILED',
+  'PROCESS_TREE_AUDIT_TIMEOUT',
+  'RUNTIME_FAILED',
+  'RUNTIME_PID_NOT_IN_APP_PROCESS_TREE',
+  'RUNTIME_PROCESS_REMAINED',
+  'RUNTIME_READY_TIMEOUT',
+  'RUNTIME_SNAPSHOT_EVALUATE_FAILED',
+  'RUNTIME_SNAPSHOT_EVALUATE_TIMEOUT',
+  'RUNTIME_SNAPSHOT_NOT_READY',
+  'WORKSPACE_ASAR_EXTRACTOR_MISSING',
+  'WORKSPACE_ASAR_NOT_FILE',
+  'WORKSPACE_HOST_DESCRIBE_FAILED',
+  'WORKSPACE_HOST_DESCRIBE_TIMEOUT',
+  'WORKSPACE_MUX_OPEN_FAILED',
+  'WORKSPACE_MUX_OPEN_TIMEOUT',
+  'WORKSPACE_MUX_READY_FAILED',
+  'WORKSPACE_MUX_READY_TIMEOUT',
+  'WORKSPACE_RPC_CLIENT_INVALID',
+  'WORKSPACE_RPC_CLIENT_LOAD_FAILED',
+  'WORKSPACE_RPC_CLIENT_LOAD_TIMEOUT',
+  'WORKSPACE_RPC_CLIENT_MISSING_FROM_ASAR',
+  'WORKSPACE_RPC_CLIENT_NOT_FOUND',
+  'WORKSPACE_SESSION_ARCHIVE_FAILED',
+  'WORKSPACE_SESSION_ARCHIVE_TIMEOUT',
+  'WORKSPACE_SESSION_CREATE_FAILED',
+  'WORKSPACE_SESSION_CREATE_TIMEOUT',
+  'WORKSPACE_SESSION_HISTORY_FAILED',
+  'WORKSPACE_SESSION_HISTORY_TIMEOUT',
+  'WORKSPACE_SESSION_MODELS_FAILED',
+  'WORKSPACE_SESSION_MODELS_TIMEOUT',
+  'WORKSPACE_SESSION_PROMPT_FAILED',
+  'WORKSPACE_SESSION_PROMPT_TIMEOUT',
+  'WORKSPACE_WRITE_APPROVAL_REQUESTED',
+  'WORKSPACE_WRITE_EVIDENCE_INCOMPLETE',
+  'WORKSPACE_WRITE_FAILED',
+  'WORKSPACE_WRITE_FINAL_NONCE_MISSING',
+  'WORKSPACE_WRITE_HISTORY_INCOMPLETE',
+  'WORKSPACE_WRITE_HISTORY_INVALID',
+  'WORKSPACE_WRITE_MODEL_NOT_ROUTABLE',
+  'WORKSPACE_WRITE_MUX_PROTOCOL_ERROR',
+  'WORKSPACE_WRITE_PERMISSION_MODE_MISMATCH',
+  'WORKSPACE_WRITE_POWERSHELL_ARGUMENT_INVALID',
+  'WORKSPACE_WRITE_POWERSHELL_CALL_MISSING',
+  'WORKSPACE_WRITE_PROMPT_NOT_ACCEPTED',
+  'WORKSPACE_WRITE_PROVIDER_SEQUENCE_MISMATCH',
+  'WORKSPACE_WRITE_SENTINEL_MISMATCH',
+  'WORKSPACE_WRITE_SESSION_ARCHIVE_FAILED',
+  'WORKSPACE_WRITE_SESSION_ARCHIVE_TIMEOUT',
+  'WORKSPACE_WRITE_SESSION_CREATE_INVALID',
+  'WORKSPACE_WRITE_TIMEOUT',
+  'WORKSPACE_WRITE_TOOL_RESULT_MISSING',
+  'WORKSPACE_WRITE_TURN_END_MISSING',
+  'WORKSPACE_WRITE_TURN_FAILED'
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -88,13 +236,24 @@ function isNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function isPositiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isKnownProductionErrorCode(value) {
+  return typeof value === 'string' && PRODUCTION_ERROR_CODES.has(value);
+}
+
+function isNullableProductionErrorCode(value) {
+  return value === null || isKnownProductionErrorCode(value);
+}
+
 function validPackagedEvidence(value, expected) {
   if (!hasOnlyKeys(value, TOP_KEYS)) return false;
   if (value.schemaVersion !== 1 || value.tool !== 'adhd-one-packaged-e2e') return false;
   if (typeof value.generatedAt !== 'string' || !ISO_TIMESTAMP.test(value.generatedAt)
     || !Number.isFinite(Date.parse(value.generatedAt))) return false;
-  if (typeof value.executable !== 'string' || value.executable.length === 0
-    || /[\\/]/u.test(value.executable)) return false;
+  if (value.executable !== 'ADHD One.exe' || value.portableMode !== false) return false;
   if (value.scenario !== expected.scenario || !Array.isArray(value.cycles)
     || value.cyclesRequested !== expected.cycles || value.cyclesCompleted !== expected.cycles
     || value.cycles.length !== expected.cycles || value.passed !== true) return false;
@@ -123,12 +282,17 @@ function validPackagedEvidence(value, expected) {
 
 function validCycle(cycle, evidence, expected, index) {
   if (!hasOnlyKeys(cycle, CYCLE_KEYS, [...CYCLE_KEYS].filter(key => key !== 'errorCode'))) return false;
-  if (cycle.cycle !== index + 1 || cycle.scenario !== expected.scenario
+  if (cycle.cycle !== index + 1 || cycle.scenario !== expected.scenario || cycle.portableMode !== false
     || !isBooleanRecord(cycle, CYCLE_BOOLEAN_KEYS)
-    || !CYCLE_NUMBER_KEYS.every(key => isNonNegativeInteger(cycle[key]))) return false;
-  if (cycle.errorCode !== undefined && (typeof cycle.errorCode !== 'string' || !SAFE_CODE.test(cycle.errorCode))) return false;
+    || !POSITIVE_CYCLE_NUMBER_KEYS.every(key => isPositiveInteger(cycle[key]))
+    || !NON_NEGATIVE_CYCLE_NUMBER_KEYS.every(key => isNonNegativeInteger(cycle[key]))) return false;
+  if (cycle.errorCode !== undefined && !isNullableProductionErrorCode(cycle.errorCode)) return false;
   if (!Array.isArray(cycle.remainingPids) || !Array.isArray(cycle.finalScopedProcessAuditPids)
-    || cycle.remainingPids.length !== 0 || cycle.finalScopedProcessAuditPids.length !== 0) return false;
+    || !cycle.remainingPids.every(isPositiveInteger)
+    || !cycle.finalScopedProcessAuditPids.every(isPositiveInteger)
+    || cycle.remainingPids.length !== 0
+    || cycle.finalScopedProcessAuditCount !== cycle.finalScopedProcessAuditPids.length
+    || (cycle.finalScopedProcessAuditPassed === true && cycle.finalScopedProcessAuditCount !== 0)) return false;
   if ((cycle.exitCode !== null && !isNonNegativeInteger(cycle.exitCode))
     || (cycle.exitSignal !== null && (typeof cycle.exitSignal !== 'string' || !SAFE_CODE.test(cycle.exitSignal)))) return false;
   if (cycle.portableMode !== evidence.portableMode || cycle.passed !== true
@@ -180,16 +344,18 @@ function validInstalledSummary(value) {
   if (!hasOnlyKeys(value, SUMMARY_KEYS)) return false;
   if (value.schemaVersion !== 1 || value.tool !== 'adhd-one-installed-e2e' || value.passed !== true
     || value.uninstallExitCode !== 0 || value.errorCode !== null
-    || !Array.isArray(value.cleanupErrorCodes) || value.cleanupErrorCodes.length !== 0) return false;
+    || !Array.isArray(value.cleanupErrorCodes)
+    || !value.cleanupErrorCodes.every(isKnownProductionErrorCode)
+    || value.cleanupErrorCodes.length !== 0) return false;
   const requiredTrue = [
     'installStarted', 'installCompleted', 'shortcutsCreated', 'suitePassed',
     'uninstallAttempted', 'uninstallSucceeded', 'installDirectoryRemoved',
     'processClean', 'registryClean', 'shortcutsClean'
   ];
   if (!isBooleanRecord(value, [
-    ...requiredTrue, 'installLocationRecordMatched'
+    ...requiredTrue, 'installLocationRecordMatched', 'uninstallCommandRecordMatched'
   ]) || !requiredTrue.every(key => value[key] === true)) return false;
-  if (value.installLocationRecordMatched !== true && value.uninstallCommandRecordMatched !== true) return false;
+  if (!value.installLocationRecordMatched && !value.uninstallCommandRecordMatched) return false;
   return ['uninstallRecordCount', 'matchingUninstallRecordCount']
     .every(key => isNonNegativeInteger(value[key]))
     && value.uninstallRecordCount > 0
@@ -210,23 +376,122 @@ function failure(file, code) {
   return `${file}:${code}`;
 }
 
+function comparablePath(value) {
+  const normalized = path.normalize(value);
+  const root = path.parse(normalized).root;
+  const withoutTrailingSeparator = normalized.length > root.length
+    ? normalized.replace(/[\\/]+$/u, '')
+    : normalized;
+  return process.platform === 'win32' ? withoutTrailingSeparator.toLowerCase() : withoutTrailingSeparator;
+}
+
+function samePath(left, right) {
+  return comparablePath(left) === comparablePath(right);
+}
+
+function isPathWithin(root, candidate) {
+  const relative = path.relative(comparablePath(root), comparablePath(candidate));
+  return relative.length > 0 && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function isLinkOrReparse(value) {
+  return value?.isSymbolicLink?.() === true || value?.isReparsePoint?.() === true;
+}
+
+function directoryFailure() {
+  return { ok: false, errors: [failure('<directory>', 'EVIDENCE_DIRECTORY_INVALID')] };
+}
+
+function fileFailure(name) {
+  return {
+    ok: false,
+    errors: [failure(name, name === INSTALLED_SUMMARY_FILE
+      ? 'INSTALLED_SUMMARY_INVALID'
+      : 'PACKAGED_EVIDENCE_INVALID')]
+  };
+}
+
+async function inspectEvidenceDirectory(directory) {
+  let absoluteDirectory;
+  try {
+    absoluteDirectory = path.resolve(directory);
+  } catch {
+    return directoryFailure();
+  }
+
+  let directoryInfo;
+  try {
+    directoryInfo = await lstat(absoluteDirectory);
+  } catch {
+    return directoryFailure();
+  }
+  if (!directoryInfo.isDirectory() || isLinkOrReparse(directoryInfo)) return directoryFailure();
+
+  let realDirectory;
+  try {
+    realDirectory = await realpath(absoluteDirectory);
+  } catch {
+    return directoryFailure();
+  }
+  if (!samePath(absoluteDirectory, realDirectory)) return directoryFailure();
+
+  let entries;
+  try {
+    entries = await readdir(absoluteDirectory, { withFileTypes: true });
+  } catch {
+    return directoryFailure();
+  }
+
+  const names = new Set(entries.map(entry => entry.name));
+  const missing = EVIDENCE_FILE_NAMES.filter(name => !names.has(name));
+  const hasExtra = entries.length !== EVIDENCE_FILE_NAMES.length
+    || entries.some(entry => !EVIDENCE_FILE_NAME_SET.has(entry.name));
+  if (missing.length > 0 || hasExtra) {
+    const errors = missing.map(name => failure(name, name === INSTALLED_SUMMARY_FILE
+      ? 'INSTALLED_SUMMARY_MISSING'
+      : 'PACKAGED_EVIDENCE_MISSING_OR_INVALID'));
+    if (hasExtra) errors.push(failure('<directory>', 'EVIDENCE_DIRECTORY_CONTENTS_INVALID'));
+    return { ok: false, errors };
+  }
+
+  for (const name of EVIDENCE_FILE_NAMES) {
+    const entry = entries.find(candidate => candidate.name === name);
+    const filename = path.join(absoluteDirectory, name);
+    let fileInfo;
+    try {
+      fileInfo = await lstat(filename);
+    } catch {
+      return fileFailure(name);
+    }
+    if (!entry || isLinkOrReparse(entry) || isLinkOrReparse(fileInfo) || !fileInfo.isFile()) {
+      return fileFailure(name);
+    }
+
+    let realFile;
+    try {
+      realFile = await realpath(filename);
+    } catch {
+      return fileFailure(name);
+    }
+    if (!isPathWithin(realDirectory, realFile) || !samePath(path.dirname(realFile), realDirectory)) {
+      return fileFailure(name);
+    }
+  }
+  return { ok: true, directory: absoluteDirectory };
+}
+
 export async function verifyEvidenceDirectory(directory) {
   if (typeof directory !== 'string' || directory.length === 0) {
     return { ok: false, errors: [failure('<directory>', 'INVALID_ARGUMENT')] };
   }
-  let directoryInfo;
-  try {
-    directoryInfo = await stat(path.resolve(directory));
-  } catch {
-    return { ok: false, errors: [failure('<directory>', 'EVIDENCE_DIRECTORY_INVALID')] };
-  }
-  if (!directoryInfo.isDirectory()) {
-    return { ok: false, errors: [failure('<directory>', 'EVIDENCE_DIRECTORY_INVALID')] };
-  }
+  const inspected = await inspectEvidenceDirectory(directory);
+  if (!inspected.ok) return inspected;
+  const evidenceDirectory = inspected.directory;
 
   const errors = [];
   for (const expected of PACKAGED_FILES) {
-    const file = path.join(directory, expected.name);
+    const file = path.join(evidenceDirectory, expected.name);
     const value = await readJson(file);
     if (value === undefined) {
       errors.push(failure(expected.name, 'PACKAGED_EVIDENCE_MISSING_OR_INVALID'));
@@ -235,15 +500,9 @@ export async function verifyEvidenceDirectory(directory) {
     }
   }
 
-  const summaryPath = path.join(directory, 'installed-summary.json');
-  try {
-    await access(summaryPath);
-    const summary = await readJson(summaryPath);
-    if (summary === undefined || !validInstalledSummary(summary)) {
-      errors.push(failure('installed-summary.json', 'INSTALLED_SUMMARY_INVALID'));
-    }
-  } catch {
-    // The packaged suite can be downloaded without the installed wrapper summary.
+  const summary = await readJson(path.join(evidenceDirectory, INSTALLED_SUMMARY_FILE));
+  if (summary === undefined || !validInstalledSummary(summary)) {
+    errors.push(failure(INSTALLED_SUMMARY_FILE, 'INSTALLED_SUMMARY_INVALID'));
   }
   return { ok: errors.length === 0, errors };
 }

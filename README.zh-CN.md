@@ -49,7 +49,7 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 - Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
 - Packaged E2E：本地启动、强杀、workspace-write 和 Portable 检查已通过，并确认进程树清空；这些本地检查不是最终 hardened CI 证据。
-- 当前本地证据：`npm run check` 通过（24 个 test files/232 个 tests），JavaScript 语法门通过 21 个文件，`npm run test:doctor` 通过（20/20），真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。Setup 为 144.04 MiB；打包后二进制正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过且无残留 PID。workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。这些结果仍不代表 Windows 11、Stable、性能或完整安装后 Release E2E 已完成。
+- 当前本地证据：`npm run check` 通过（25 个 test files/267 个 tests），JavaScript 语法门通过 21 个文件，`npm run test:doctor` 通过（20/20），真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。Setup 为 144.04 MiB；打包后二进制正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过且无残留 PID。workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。这些结果仍不代表 Windows 11、Stable、性能或完整安装后 Release E2E 已完成。
 
 ## 本地开发
 

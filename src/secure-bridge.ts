@@ -8,6 +8,7 @@ import type { WindowManager } from './window-manager.js';
 import { isTrustedControlUrl } from './security.js';
 
 const BRIDGE_ERROR_CODES = new Set<string>([
+  'APP_QUITTING',
   'UNTRUSTED_IPC_SENDER',
   'APP_SNAPSHOT_FAILED', 'WORKSPACE_PICK_FAILED', 'PATH_NOT_CONFIGURED', 'PATH_OPEN_FAILED',
   'WORKSPACE_NOT_FOUND', 'WORKSPACE_NOT_DIRECTORY', 'SETTINGS_IO', 'SETTINGS_CORRUPT', 'SETTINGS_LOCKED',
@@ -38,6 +39,27 @@ class SecureBridgeError extends Error {
   }
 }
 
+export interface AppQuitState {
+  beginQuit(): void;
+  isQuitting(): boolean;
+  generation(): number;
+}
+
+/** A synchronous, one-way gate shared by main and every IPC mutation. */
+export function createAppQuitState(): AppQuitState {
+  let quitting = false;
+  let currentGeneration = 0;
+  return {
+    beginQuit(): void {
+      if (quitting) return;
+      quitting = true;
+      currentGeneration += 1;
+    },
+    isQuitting: () => quitting,
+    generation: () => currentGeneration
+  };
+}
+
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
   if ('code' in error && typeof error.code === 'string') return error.code;
@@ -60,22 +82,43 @@ function trusted(event: IpcMainInvokeEvent, windows: WindowManager): void {
 export function installSecureBridge(input: {
   runtime: RuntimeController; settings: SettingsStore; updates: UpdateManager; doctor: ProviderDoctor; windows: WindowManager;
   paths: { data: string; logs: string; dshHome: string };
+  quitState?: AppQuitState;
 }): void {
-  const handle = (channel: string, callback: (event: IpcMainInvokeEvent, value: unknown) => unknown) => ipcMain.handle(channel, async (event, value) => {
+  const quitState = input.quitState ?? createAppQuitState();
+  type AssertActive = () => void;
+  const handle = (
+    channel: string,
+    callback: (event: IpcMainInvokeEvent, value: unknown, assertActive: AssertActive) => unknown,
+    options: { allowDuringQuit?: boolean } = {}
+  ) => ipcMain.handle(channel, async (event, value) => {
     try {
       trusted(event, input.windows);
-      return await callback(event, value);
+      const assertActive: AssertActive = options.allowDuringQuit
+        ? () => undefined
+        : (() => {
+          const generation = quitState.generation();
+          return () => {
+            if (quitState.isQuitting() || quitState.generation() !== generation) throw new SecureBridgeError('APP_QUITTING');
+          };
+        })();
+      assertActive();
+      return await callback(event, value, assertActive);
     } catch (error) {
       throw stableError(error, CHANNEL_FALLBACK_CODES[channel] ?? 'IPC_OPERATION_FAILED');
     }
   });
-  handle('app:snapshot', () => ({ appVersion: app.getVersion(), runtime: input.runtime.snapshot(), workspace: input.settings.get().workspace }));
-  handle('app:quit', () => { setImmediate(() => void input.windows.quit()); return { accepted: true }; });
-  handle('workspace:choose', async () => {
+  handle('app:snapshot', () => ({ appVersion: app.getVersion(), runtime: input.runtime.snapshot(), workspace: input.settings.get().workspace }), { allowDuringQuit: true });
+  handle('app:quit', () => {
+    quitState.beginQuit();
+    setImmediate(() => void input.windows.quit());
+    return { accepted: true };
+  }, { allowDuringQuit: true });
+  handle('workspace:choose', async (_event, _value, assertActive) => {
     const owner = input.windows.controlWindow();
     const options: OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'], title: '选择 DeepSeek Harness 工作区' };
     const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) return {};
+    assertActive();
     return { path: await input.settings.setWorkspace(result.filePaths[0]) };
   });
   handle('path:open', async (_event, value) => {
@@ -83,35 +126,91 @@ export function installSecureBridge(input: {
     const target = kind === 'workspace' ? input.settings.get().workspace : input.paths[kind];
     if (!target) throw new Error('PATH_NOT_CONFIGURED'); const error = await shell.openPath(target); if (error) throw new Error('PATH_OPEN_FAILED');
   });
-  handle('runtime:restart', () => input.runtime.restart());
-  handle('update:check', (_event, value) => { const target = z.enum(['app', 'runtime']).parse(value); const settings = input.settings.get(); return input.updates.check(target, target === 'app' ? settings.appChannel : settings.runtimeChannel); });
-  handle('update:confirm', async (_event, value) => {
+  handle('runtime:restart', async (_event, _value, assertActive) => {
+    assertActive();
+    try {
+      const snapshot = await input.runtime.restart();
+      assertActive();
+      return snapshot;
+    } catch (error) {
+      assertActive();
+      throw error;
+    }
+  });
+  handle('update:check', async (_event, value, assertActive) => {
+    const target = z.enum(['app', 'runtime']).parse(value); const settings = input.settings.get();
+    assertActive();
+    try {
+      const snapshot = await input.updates.check(target, target === 'app' ? settings.appChannel : settings.runtimeChannel);
+      assertActive();
+      return snapshot;
+    } catch (error) {
+      assertActive();
+      throw error;
+    }
+  });
+  handle('update:confirm', async (_event, value, assertActive) => {
     const target = z.enum(['app', 'runtime']).parse(value);
     if (target === 'app' && input.updates.isPortable()) {
       const snapshot = input.updates.snapshot('app');
       if (!snapshot.canConfirm || !snapshot.candidateVersion) throw new Error('UPDATE_NOT_AVAILABLE');
+      assertActive();
       await shell.openExternal(`https://github.com/xydadada/adhd-one/releases/tag/v${encodeURIComponent(snapshot.candidateVersion)}`);
       return;
     }
-    try { await input.updates.confirm(target); }
-    catch { throw new Error('UPDATE_CONFIRM_FAILED'); }
+    try { assertActive(); await input.updates.confirm(target); }
+    catch { assertActive(); throw new Error('UPDATE_CONFIRM_FAILED'); }
+    assertActive();
     if (target === 'app') {
+      assertActive();
       await input.runtime.stop();
-      try { input.updates.quitAndInstall(); }
-      catch { await input.runtime.start().catch(() => undefined); throw new Error('APP_INSTALL_FAILED'); }
+      assertActive();
+      try {
+        assertActive();
+        input.updates.quitAndInstall();
+      }
+      catch {
+        assertActive();
+        await input.runtime.start().catch(() => undefined);
+        assertActive();
+        throw new Error('APP_INSTALL_FAILED');
+      }
+    } else {
+      assertActive();
+      try {
+        await input.runtime.restart();
+        assertActive();
+      } catch (error) {
+        assertActive();
+        throw error;
+      }
     }
-    else await input.runtime.restart();
   });
-  handle('doctor:run', async (_event, value) => {
+  handle('doctor:run', async (_event, value, assertActive) => {
     const mode = z.enum(['quick', 'deep']).parse(value);
     if (mode === 'deep') {
+      assertActive();
       const owner = input.windows.controlWindow();
       const options = { type: 'warning' as const, title: '确认 Provider 深度检查', message: '这会使用当前默认模型执行一次真实工具调用，可能产生小额费用。', buttons: ['继续', '取消'], defaultId: 1, cancelId: 1 };
       const answer = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+      assertActive();
       if (answer.response !== 0) throw new Error('DOCTOR_CONFIRMATION_REQUIRED');
     }
-    return input.doctor.run(mode);
+    assertActive();
+    try {
+      const report = await input.doctor.run(mode);
+      assertActive();
+      return report;
+    } catch (error) {
+      assertActive();
+      throw error;
+    }
   });
-  handle('doctor:cancel', () => input.doctor.cancel());
-  handle('doctor:copy', () => { const report = input.doctor.report(); if (!report) throw new Error('DOCTOR_REPORT_MISSING'); clipboard.writeText(JSON.stringify(report, null, 2)); });
+  handle('doctor:cancel', (_event, _value, assertActive) => { assertActive(); return input.doctor.cancel(); });
+  handle('doctor:copy', (_event, _value, assertActive) => {
+    const report = input.doctor.report();
+    if (!report) throw new Error('DOCTOR_REPORT_MISSING');
+    assertActive();
+    clipboard.writeText(JSON.stringify(report, null, 2));
+  });
 }

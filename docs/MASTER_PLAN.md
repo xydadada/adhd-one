@@ -23,13 +23,13 @@
 
 发布门槛：`v0.2.0-beta.2` 至少 78%，`v0.2.0-rc.1` 至少 94%，`v0.2.0` Stable 必须 100%。
 
-当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 是 prerelease；`v0.2.0` Stable 尚未发布。当前工作树 `package.json` 的版本为 `0.2.0`，不代表已有 `v0.2.0` Stable 资产。
+当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 是 prerelease；`v0.2.0-beta.2` 正在准备但尚未发布；`v0.2.0` Stable 尚未发布。当前工作树 `package.json` 的版本为 `0.2.0-beta.2`，不代表已有同名 tag、Release 或 `v0.2.0` Stable 资产。
 
 当前本地验证进度：**74%**（在此前 73 分基础上新增 Q2 +1）。`v0.2.0-beta.2` 的 78% 门槛尚未达到；不得提前打 tag。已计入本机 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、快速启动注册一致性检查、真实 Runtime smoke、Runtime staging smoke、Runtime archive closure smoke、迁移/reparse 安全测试、Fuse 静态断言，以及最终 Portable EXE 上使用官方 mock provider 完成的真实 PowerShell tool-call 往返。完整十次循环、NSIS 安装后 E2E、GitHub Actions、Stable 发布和干净 Windows 11 结果尚未计入。
 
-最新本地证据：`npm run check` 最近一次完整运行通过（20 个 test files、201 个 tests），新增 `npm run check:syntax` 覆盖 20 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；冻结源码编译后 `node scripts/smoke-app.mjs` 在 7.84 秒内输出 `SMOKE_OK`。最终 Portable EXE 的 launch、force-kill 和 workspace-write 三个独立 E2E 均通过；workspace-write 证据确认 `packaged-asar` RPC client、`workspace-write` 权限、mock 鉴权、PowerShell 调用、参数解析、工具结果、第二次 provider 往返、最终 nonce、Session 归档、优雅退出和进程树清空。此前真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。这些本地证据仍不等同于完整 packaged suite、NSIS 安装后 E2E、Windows 11 或 Stable 发布证据。
+最新本地证据：`npm run check` 最近一次完整运行通过（25 个 test files、267 个 tests），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；冻结源码编译后 `node scripts/smoke-app.mjs` 在 7.84 秒内输出 `SMOKE_OK`。最终 Portable EXE 的 launch、force-kill 和 workspace-write 三个独立 E2E 均通过；workspace-write 证据确认 `packaged-asar` RPC client、`workspace-write` 权限、mock 鉴权、PowerShell 调用、参数解析、工具结果、第二次 provider 往返、最终 nonce、Session 归档、优雅退出和进程树清空。此前真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。这些本地证据仍不等同于完整 packaged suite、NSIS 安装后 E2E、Windows 11 或 Stable 发布证据。
 
-2026-08-14 最新冻结产物复验：Setup 为 151,042,127 bytes（144.04 MiB），Portable ZIP 为 208,052,524 bytes（198.41 MiB）且 7-Zip 完整测试通过；最新 Job 级退出屏障的源码 smoke 通过并确认零残留，打包后二进制的正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过。Q3 仍保持 0 分，直到 GitHub `windows-2025` 上的 NSIS 安装后固定 13 循环套件完整通过；这些本地分项结果不得代替完整套件或 Windows 11 证据。
+2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
 
 | 编号 | 工作项 | 总分 | 已得 |
 |---|---|---:|---:|
@@ -344,7 +344,7 @@ npm run test:doctor
 npm run check
 ```
 
-当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 20 个 test files、201 个 tests 全部通过；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
+当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 25 个 test files、267 个 tests 全部通过；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
 
 后续阶段待新增（当前不可执行）：
 
@@ -357,7 +357,7 @@ npm run check
 
 ### 阶段 D：打包后自动 E2E，78% → 89%
 
-GitHub `windows-2025` 构建一次并复用产物。当前 packaged 脚本已在最终 Portable EXE 上分别验证启动、ControlWindow、Harness ready、官方 mock provider、Session/PowerShell tool-call、强制结束 Electron、Job 清理、退出和临时目录清理；完整十次循环和最终 ZIP 启动仍需在冻结产物上复核。Setup `/S` 隔离安装、静默卸载、快捷方式和注册表残留验证仍是本阶段待补齐的硬门槛。
+GitHub `windows-2025` 构建一次并复用产物。当前 workflow 已对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write 和十次启动，共 13 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。run `31823906216` 的 Portable 与 12/13 个安装版循环通过，但总门槛因一个 Electron 退出竞态失败；只有修复后的新 SHA 全部通过才完成本阶段。
 
 ```powershell
 npm run build:ci
@@ -383,7 +383,7 @@ GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干�
 | npm 命令 | 用途 |
 |---|---|
 | `npm run e2e:win11 -- --suite rc --output .\evidence` | 干净 Windows 11 x64 套件 |
-| `npm run verify:evidence -- .\evidence\win11-evidence.json` | Windows 11 evidence 校验 |
+| `npm run verify:evidence -- .\evidence\win11` | 校验包含完整固定证据集的 Windows 11 evidence 目录 |
 
 RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 秒，空闲 CPU <1%，退出五秒内 Job 活动进程为零，中文用户名和干净 VM 全通过。达到 94% 后才发布 `v0.2.0-rc.1`。
 
@@ -406,7 +406,7 @@ RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 
 
 ## 9. 打包、CI 与发布
 
-`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、有限的 packaged launch/ready/exit smoke 和包体大小检查；性能报告与完整 packaged E2E 尚未形成证据，属于后续门槛；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成 smoke、SBOM、attestation 和 Release。
+`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、安装版固定 13 循环、Portable ZIP 专项 E2E、证据上传和包体大小检查。当前尚无一轮修复后全绿的完整 packaged E2E，也没有性能合格证据；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成安装版/Portable E2E、SBOM、attestation 和 Release。
 
 所有 GitHub Actions 固定完整 commit SHA；Release workflow 增加 `concurrency` 和 `timeout-minutes`；不发布普通 CI 中未经当前 Release workflow 证明的二进制。缓存只包含 npm cache 和 SHA-256 已验证的 Node 官方压缩包，不缓存最终 Runtime closure、SBOM、证明或 Release 资产。
 
@@ -416,7 +416,7 @@ RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 
 
 单元测试覆盖状态机、generation、Windows 参数、URL/path、manifest、archive entry、settings recovery 和报告脱敏；集成测试覆盖匿名双管道、Job 调用顺序、退出协调、restart cancellation、流式下载、A/B 回滚、Doctor mux 状态机和官方 mock server 故障类型。
 
-打包后测试覆盖 Setup、Portable、空 PATH、中文路径、PowerShell、workspace-write、approval、tool-call、十次启停、Electron crash、更新中断和无残留进程。发布前必须有 SHA-256、npm signatures、SPDX SBOM、licenses、GitHub attestation、offline bundle、Windows 11 evidence 和中英文说明。
+打包后测试覆盖 Setup、Portable、空 PATH、中文路径、PowerShell、workspace-write、approval、tool-call、十次启停、Electron crash、更新中断和应用范围内无残留进程。Beta 发布前必须有 SHA-256、npm signatures、SPDX SBOM、licenses、GitHub attestation、offline bundle 和中英文说明；Windows 11 evidence 与性能证据是 `v0.2.0-rc.1`/Stable 的额外硬门槛。
 
 ## 11. 最终统一规则
 

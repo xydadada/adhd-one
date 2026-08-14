@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   HARD_EXIT_DELAY_MS,
   QuitCoordinator,
@@ -115,5 +116,12 @@ describe('QuitCoordinator', () => {
     await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS + 1);
 
     expect(fixture.hardExit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the fallback armed because Electron quit does not prove process exit', () => {
+    const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+
+    expect(source).not.toContain('quitCoordinator.markElectronExited()');
+    expect(source).toContain('keep the 250ms hard-exit fallback armed');
   });
 });

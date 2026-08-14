@@ -76,14 +76,15 @@ jobs:
           if ($latest -notmatch $versionPattern) {
             throw "latest.yml version does not match package.json ($version)"
           }
-      - name: Packaged win-unpacked launch smoke
+      - name: Packaged Portable win-unpacked launch smoke
         shell: pwsh
         run: >-
           node scripts/e2e/packaged.mjs
           --exe "dist/win-unpacked/ADHD One.exe"
-          --output evidence/win-unpacked-launch.json
+          --output evidence/portable-win-unpacked-launch.json
           --scenario launch
           --cycles 1
+          --require-portable
       - name: Freeze build artifact names
         id: artifact-names
         shell: pwsh
@@ -115,14 +116,14 @@ jobs:
         if: always()
         with:
           name: adhd-one-build-evidence-${{ github.sha }}-${{ github.run_attempt }}
-          path: evidence/win-unpacked-launch.json
+          path: evidence/portable-win-unpacked-launch.json
           retention-days: 30
           if-no-files-found: warn
 
   installed-e2e:
     needs: build-windows
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -145,6 +146,8 @@ jobs:
           ./scripts/e2e/installed.ps1 `
             -SetupPath "dist/ADHD-One-Setup-$($package.version)-x64.exe" `
             -EvidenceDirectory evidence/installed
+      - name: Verify installed E2E evidence
+        run: npm run verify:evidence -- evidence/installed
       - name: Upload installed evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

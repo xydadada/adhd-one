@@ -101,7 +101,12 @@ try {
   if (@(Get-AdhdUninstallRecords).Count -ne 0) { throw 'INSTALLED_E2E_PREEXISTING_INSTALL' }
   if (@($shortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -ne 0) { throw 'INSTALLED_E2E_PREEXISTING_SHORTCUT' }
   $installStarted = $true
-  $install = Start-Process -FilePath $setup -ArgumentList @('/S', '/currentuser', "/D=$installRoot") -Wait -PassThru -WindowStyle Hidden
+  $install = Start-Process -FilePath $setup -ArgumentList @('/S', '/currentuser', "/D=$installRoot") -PassThru -WindowStyle Hidden
+  if (-not $install.WaitForExit(300000)) {
+    try { $install.Kill($true) } catch {}
+    try { $install.WaitForExit(15000) | Out-Null } catch {}
+    throw 'INSTALLED_E2E_INSTALL_TIMEOUT'
+  }
   if ($install.ExitCode -ne 0) { throw 'INSTALLED_E2E_INSTALL_FAILED' }
   $installCompleted = $true
 

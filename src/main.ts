@@ -9,7 +9,7 @@ import { SettingsStore } from './settings-store.js';
 import { UpdateManager } from './update-manager.js';
 import { ProviderDoctor } from './provider-doctor.js';
 import { WindowManager } from './window-manager.js';
-import { installSecureBridge } from './secure-bridge.js';
+import { createAppQuitState, installSecureBridge } from './secure-bridge.js';
 import { isExactOrigin } from './security.js';
 import { copyLegacyDsh, detectLegacyDsh, getLegacyDshPath } from './data-migration.js';
 import { assertNoWindowsReparseComponents } from './windows-platform.js';
@@ -129,11 +129,12 @@ async function main(): Promise<void> {
   let windows: WindowManager;
   const doctor = new ProviderDoctor(runtime, path.join(local, 'cache'), app.getVersion(), progress => windows?.controlWindow()?.webContents.send('doctor:progress', progress));
   windows = new WindowManager(runtime, appPath, 'adhd-one://app/index.html', settings, updates, { data, logs: paths.logs }, smokeTest);
+  const quitState = createAppQuitState();
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   session.defaultSession.on('will-download', event => event.preventDefault());
   windows.create();
-  installSecureBridge({ runtime, settings, updates, doctor, windows, paths });
+  installSecureBridge({ runtime, settings, updates, doctor, windows, paths, quitState });
   updates.on('changed', value => windows.controlWindow()?.webContents.send('update:changed', value));
 
   const harnessSession = session.fromPartition('persist:adhd-one-harness');
@@ -151,8 +152,9 @@ async function main(): Promise<void> {
     },
     hardExit: exitCode => process.exit(exitCode)
   });
-  app.on('quit', () => quitCoordinator.markElectronExited());
+  // app.exit() may emit "quit" before the OS process is gone; keep the 250ms hard-exit fallback armed.
   app.on('before-quit', event => {
+    quitState.beginQuit();
     if (quitReady) return;
     event.preventDefault();
     void quitCoordinator.requestQuit();

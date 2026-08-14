@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,19 @@ afterEach(async () => {
 });
 
 type JsonObject = Record<string, unknown>;
+
+async function readJsonObject(file: string): Promise<JsonObject> {
+  return JSON.parse(await readFile(file, 'utf8')) as JsonObject;
+}
+
+async function writeJsonObject(file: string, value: JsonObject): Promise<void> {
+  await writeFile(file, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+function symlinkUnavailable(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return ['EACCES', 'ENOTSUP', 'EPERM'].includes(String(error.code));
+}
 
 function workspace(requested: boolean): JsonObject {
   return {
@@ -164,9 +177,9 @@ describe('downloaded Windows E2E evidence verifier', () => {
   it('rejects an allowlist violation without echoing its sensitive value', async () => {
     const root = await makeDirectory();
     const file = path.join(root, 'launch-1.json');
-    const value = JSON.parse(await (await import('node:fs/promises')).readFile(file, 'utf8')) as JsonObject;
+    const value = await readJsonObject(file);
     value.rawOutput = 'Bearer super-secret-token';
-    await writeFile(file, JSON.stringify(value), 'utf8');
+    await writeJsonObject(file, value);
     const result = await verifyEvidenceDirectory(root);
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual(['launch-1.json:PACKAGED_EVIDENCE_INVALID']);
@@ -178,34 +191,167 @@ describe('downloaded Windows E2E evidence verifier', () => {
   it('requires strict cycle counts, normal exit booleans, force-kill, and workspace-write evidence', async () => {
     const root = await makeDirectory();
     const normalPath = path.join(root, 'launch-1.json');
-    const normal = JSON.parse(await (await import('node:fs/promises')).readFile(normalPath, 'utf8')) as JsonObject;
+    const normal = await readJsonObject(normalPath);
     normal.cyclesCompleted = 0;
-    await writeFile(normalPath, JSON.stringify(normal), 'utf8');
+    await writeJsonObject(normalPath, normal);
     expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
 
     const forcePath = path.join(root, 'force-kill-1.json');
-    const force = JSON.parse(await (await import('node:fs/promises')).readFile(forcePath, 'utf8')) as JsonObject;
+    const force = await readJsonObject(forcePath);
     (force.cycles as JsonObject[])[0].forceKillVerified = false;
-    await writeFile(forcePath, JSON.stringify(force), 'utf8');
+    await writeJsonObject(forcePath, force);
     expect((await verifyEvidenceDirectory(root)).errors).toContain('force-kill-1.json:PACKAGED_EVIDENCE_INVALID');
 
     const workspacePath = path.join(root, 'workspace-write-1.json');
-    const workspaceEvidence = JSON.parse(await (await import('node:fs/promises')).readFile(workspacePath, 'utf8')) as JsonObject;
+    const workspaceEvidence = await readJsonObject(workspacePath);
     const workspaceCycle = (workspaceEvidence.cycles as JsonObject[])[0];
     (workspaceCycle.workspaceWrite as JsonObject).toolResult = false;
-    await writeFile(workspacePath, JSON.stringify(workspaceEvidence), 'utf8');
+    await writeJsonObject(workspacePath, workspaceEvidence);
     expect((await verifyEvidenceDirectory(root)).errors).toContain('workspace-write-1.json:PACKAGED_EVIDENCE_INVALID');
   });
 
   it('fails when installed cleanup leaves registry or shortcut residue', async () => {
     const root = await makeDirectory();
     const file = path.join(root, 'installed-summary.json');
-    const value = JSON.parse(await (await import('node:fs/promises')).readFile(file, 'utf8')) as JsonObject;
+    const value = await readJsonObject(file);
     value.registryClean = false;
     value.cleanupErrorCodes = ['INSTALLED_E2E_REGISTRY_REMAINED'];
-    await writeFile(file, JSON.stringify(value), 'utf8');
+    await writeJsonObject(file, value);
     const result = await verifyEvidenceDirectory(root);
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual(['installed-summary.json:INSTALLED_SUMMARY_INVALID']);
+  });
+
+  it('rejects evidence when installed-summary.json is missing', async () => {
+    const root = await makeDirectory();
+    await rm(path.join(root, 'installed-summary.json'));
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it('rejects extra files and directories in the evidence directory', async () => {
+    const root = await makeDirectory();
+    await writeFile(path.join(root, 'unexpected.txt'), 'unexpected', 'utf8');
+    await mkdir(path.join(root, 'unexpected-directory'));
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it('rejects a symlinked evidence file when symlinks are available', async context => {
+    const root = await makeDirectory();
+    const targetRoot = await mkdtemp(path.join(os.tmpdir(), 'verify-evidence-target-'));
+    roots.push(targetRoot);
+    const source = path.join(root, 'launch-1.json');
+    const target = path.join(targetRoot, 'launch-1.json');
+    await writeFile(target, await readFile(source, 'utf8'), 'utf8');
+    await rm(source);
+    try {
+      await symlink(target, source, 'file');
+    } catch (error) {
+      if (symlinkUnavailable(error)) context.skip('file symlinks are unavailable on this platform');
+      throw error;
+    }
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it('rejects a generatedAt timestamp without milliseconds', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    value.generatedAt = '2026-08-15T00:00:00Z';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+  });
+
+  it('rejects a drive-qualified executable path', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    value.executable = 'C:\\Users\\Alice\\ADHD One.exe';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+  });
+
+  it('rejects a sensitive executable name', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    value.executable = 'secret-token.exe';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+  });
+
+  it('rejects installed evidence marked portable at the top level', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    value.portableMode = true;
+    (value.cycles as JsonObject[])[0].portableMode = true;
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it('rejects installed evidence with a portable cycle', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    (value.cycles as JsonObject[])[0].portableMode = true;
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it.each(['pid', 'runtimePid', 'cdpPort', 'processTreeCount'])('rejects a zero %s', async field => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    (value.cycles as JsonObject[])[0][field] = 0;
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+  });
+
+  it('rejects an audit count that does not match the audit PID array', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    (value.cycles as JsonObject[])[0].finalScopedProcessAuditCount = 1;
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).ok).toBe(false);
+  });
+
+  it('rejects a non-boolean summary matched field', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'installed-summary.json');
+    const value = await readJsonObject(file);
+    value.installLocationRecordMatched = true;
+    value.uninstallCommandRecordMatched = 'true';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('installed-summary.json:INSTALLED_SUMMARY_INVALID');
+  });
+
+  it('rejects an unknown cycle errorCode', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    (value.cycles as JsonObject[])[0].errorCode = 'UNKNOWN_ERROR_CODE';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+  });
+
+  it('rejects an E-prefixed non-production cycle errorCode', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'launch-1.json');
+    const value = await readJsonObject(file);
+    (value.cycles as JsonObject[])[0].errorCode = 'EVIL_SECRET';
+    await writeJsonObject(file, value);
+    const result = await verifyEvidenceDirectory(root);
+    expect(result.errors).toContain('launch-1.json:PACKAGED_EVIDENCE_INVALID');
+    expect(JSON.stringify(result)).not.toContain('EVIL_SECRET');
+  });
+
+  it('requires a null errorCode in a passed installed summary', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'installed-summary.json');
+    const value = await readJsonObject(file);
+    value.errorCode = 'E2E_CYCLE_FAILED';
+    await writeJsonObject(file, value);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('installed-summary.json:INSTALLED_SUMMARY_INVALID');
   });
 });

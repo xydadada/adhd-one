@@ -44,7 +44,7 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
 - Packaged E2E: local launch, force-kill, workspace-write, and Portable checks passed with process-tree cleanup; these local checks are not final hardened CI evidence.
-- Current local evidence: `npm run check` passed 24 test files/232 tests, the JavaScript syntax gate passed 21 files, `npm run test:doctor` passed 20/20, and `npm run smoke:runtime-staging` passed with `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`. Setup is 144.04 MiB; packaged launch 3/3, force-kill 1/1, workspace-write 1/1, and real Portable mode 1/1 passed with no remaining child PID. The workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution, and session archival. This does not establish Windows 11, Stable, performance, or the complete installed release E2E.
+- Current local evidence: `npm run check` passed 25 test files/267 tests, the JavaScript syntax gate passed 21 files, `npm run test:doctor` passed 20/20, and `npm run smoke:runtime-staging` passed with `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`. Setup is 144.04 MiB; packaged launch 3/3, force-kill 1/1, workspace-write 1/1, and real Portable mode 1/1 passed with no remaining child PID. The workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution, and session archival. This does not establish Windows 11, Stable, performance, or the complete installed release E2E.
 
 ## Development
 

@@ -38,7 +38,7 @@ const electronMocks = vi.hoisted(() => {
 vi.mock('electron', () => electronMocks);
 
 import { WindowManager } from '../src/window-manager.js';
-import { installSecureBridge } from '../src/secure-bridge.js';
+import { createAppQuitState, installSecureBridge } from '../src/secure-bridge.js';
 
 type BridgeInput = Parameters<typeof installSecureBridge>[0];
 
@@ -48,6 +48,7 @@ function eventFor(): unknown {
 }
 
 function createBridge() {
+  const quitState = createAppQuitState();
   const settings = {
     get: vi.fn(() => ({ appChannel: 'stable', runtimeChannel: 'stable', workspace: 'C:\\Users\\Alice\\workspace' })),
     setWorkspace: vi.fn(async (value: string) => value)
@@ -71,6 +72,7 @@ function createBridge() {
   const input = {
     doctor,
     paths: { data: 'C:\\Users\\Alice\\AppData\\private-data', dshHome: 'C:\\Users\\Alice\\dsh', logs: 'C:\\Users\\Alice\\private-logs' },
+    quitState,
     runtime,
     settings,
     updates,
@@ -83,7 +85,7 @@ function createBridge() {
     if (!handler) throw new Error(`missing handler: ${channel}`);
     return handler(eventFor(), value);
   };
-  return { doctor, invoke, settings };
+  return { doctor, invoke, quitState, runtime, settings, updates };
 }
 
 async function captureError(operation: () => Promise<unknown>): Promise<Error> {
@@ -103,6 +105,28 @@ beforeEach(() => {
 });
 
 describe('privacy-safe IPC bridge', () => {
+  it('freezes mutations after quit begins while allowing a snapshot', async () => {
+    const { invoke, quitState, runtime } = createBridge();
+
+    quitState.beginQuit();
+
+    await expect(invoke('runtime:restart')).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
+    expect(runtime.restart).not.toHaveBeenCalled();
+    await expect(invoke('app:snapshot')).resolves.toMatchObject({ runtime: { state: 'ready' } });
+    expect(runtime.snapshot).toHaveBeenCalledOnce();
+  });
+
+  it('keeps createAppQuitState one-way and increments its generation only once', () => {
+    const quitState = createAppQuitState();
+
+    expect(quitState.isQuitting()).toBe(false);
+    expect(quitState.generation()).toBe(0);
+    quitState.beginQuit();
+    quitState.beginQuit();
+    expect(quitState.isQuitting()).toBe(true);
+    expect(quitState.generation()).toBe(1);
+  });
+
   it('does not return internal data paths in the app snapshot IPC response', async () => {
     const { invoke } = createBridge();
 
@@ -208,6 +232,7 @@ describe('privacy-safe tray notifications and renderer errors', () => {
     const source = readFileSync(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
 
     expect(source).toContain('操作失败，请稍后重试。');
+    expect(source).toContain("APP_QUITTING: '应用正在退出，请稍后重试。'");
     expect(source).not.toContain('error?.message||String(error)');
     expect(source).not.toContain('target.textContent=`操作失败：${error');
   });

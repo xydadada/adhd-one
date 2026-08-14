@@ -12,6 +12,7 @@ permissions: {}
 
 jobs:
   build:
+    if: ${{ github.repository == 'xydadada/adhd-one' && github.ref_type == 'tag' && github.actor == github.repository_owner }}
     runs-on: windows-2025
     timeout-minutes: 45
     permissions:
@@ -92,22 +93,27 @@ jobs:
             }
           }
       - run: npm run build:win
+      - name: Verify the exact runtime archive before release metadata
+        run: npm run smoke:runtime-archive
       - name: Verify packaged license closure carrier
         run: node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked
       - run: npm run verify:fuses -- "dist/win-unpacked/ADHD One.exe"
-      - name: Packaged win-unpacked E2E
+      - name: Packaged Portable win-unpacked E2E
         shell: pwsh
         run: >-
           node scripts/e2e/packaged.mjs
           --exe "dist/win-unpacked/ADHD One.exe"
-          --output evidence/release-packaged.json
+          --output evidence/release-portable-unpacked.json
           --cycles 1
+          --require-portable
       - name: NSIS installed E2E suite and uninstall residue check
         shell: pwsh
         run: |
           ./scripts/e2e/installed.ps1 `
             -SetupPath "dist/ADHD-One-Setup-${{ steps.release-version.outputs.version }}-x64.exe" `
             -EvidenceDirectory evidence/release-installed
+      - name: Verify release installed E2E evidence
+        run: npm run verify:evidence -- evidence/release-installed
       - name: Portable ZIP launch E2E
         if: always()
         shell: pwsh
@@ -276,6 +282,7 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ github.repository == 'xydadada/adhd-one' && github.ref_type == 'tag' && github.actor == github.repository_owner }}
     runs-on: windows-2025
     timeout-minutes: 30
     environment: release
@@ -819,11 +826,89 @@ jobs:
             throw "Local $tagRef resolves to $localSha, expected github.sha $env:EXPECTED_SHA"
           }
 
+          $package = Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json
+          $packageVersion = [string]$package.version
+          try {
+            $packageSemVer = [semver]$packageVersion
+          } catch {
+            throw "package.json version is not valid SemVer: $packageVersion"
+          }
+          if ([string]::IsNullOrWhiteSpace($packageVersion) -or $packageVersion -ne $env:RELEASE_VERSION) {
+            throw "package.json version $packageVersion does not match publish version $env:RELEASE_VERSION"
+          }
+          $isPrerelease = -not [string]::IsNullOrWhiteSpace([string]$packageSemVer.PreReleaseLabel)
+
           $arguments = @('release', 'create', $env:GITHUB_REF_NAME, '--verify-tag', '--target', $env:EXPECTED_SHA)
-          if ($env:GITHUB_REF_NAME.Contains('-')) { $arguments += '--prerelease' }
+          if ($isPrerelease) { $arguments += '--prerelease' }
           $arguments += @('--title', "ADHD One $env:GITHUB_REF_NAME", '--notes-file', 'RELEASE_NOTES.md')
           $arguments += $assets
           gh @arguments
           if ($LASTEXITCODE -ne 0) {
             throw "gh release create failed with exit code $LASTEXITCODE"
+          }
+
+          $releaseViewJson = (& gh release view $env:GITHUB_REF_NAME --repo $env:RELEASE_REPOSITORY --json tagName,isDraft,isPrerelease,assets | Out-String)
+          $releaseViewExitCode = $LASTEXITCODE
+          if ($releaseViewExitCode -ne 0) {
+            throw "gh release view failed with exit code $releaseViewExitCode"
+          }
+          try {
+            $release = $releaseViewJson | ConvertFrom-Json
+          } catch {
+            throw 'gh release view returned invalid JSON'
+          }
+          $remoteTag = [string]$release.tagName
+          if ($remoteTag -ne $env:GITHUB_REF_NAME) {
+            throw "Published release tag $remoteTag does not match $env:GITHUB_REF_NAME"
+          }
+          $remoteIsDraft = [bool]$release.isDraft
+          if ($remoteIsDraft) {
+            throw 'Published release must not be a draft'
+          }
+          $remoteIsPrerelease = [bool]$release.isPrerelease
+          if ($remoteIsPrerelease -ne $isPrerelease) {
+            throw "Published release prerelease=$remoteIsPrerelease does not match package.json SemVer prerelease=$isPrerelease"
+          }
+
+          $localAssetNames = @()
+          $localAssetSizes = @{}
+          $localAssetNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($asset in $assets) {
+            $name = [System.IO.Path]::GetFileName($asset)
+            if (-not $localAssetNameSet.Add($name)) {
+              throw "Local release asset allowlist contains a duplicate: $name"
+            }
+            $localAssetNames += $name
+            $localAssetSizes[$name] = [int64](Get-Item -LiteralPath $asset).Length
+          }
+
+          $remoteAssetNames = @()
+          $remoteAssetSizes = @{}
+          $remoteAssetNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($remoteAsset in @($release.assets)) {
+            $name = [string]$remoteAsset.name
+            if ([string]::IsNullOrWhiteSpace($name) -or -not $remoteAssetNameSet.Add($name)) {
+              throw "Published release contains an invalid or duplicate asset name: $name"
+            }
+            if ($null -eq $remoteAsset.size) {
+              throw "Published release asset has no size: $name"
+            }
+            $remoteAssetNames += $name
+            $remoteAssetSizes[$name] = [int64]$remoteAsset.size
+          }
+          if ($remoteAssetNameSet.Count -ne $localAssetNameSet.Count) {
+            throw "Published release asset count $($remoteAssetNameSet.Count) does not equal local allowlist count $($localAssetNameSet.Count)"
+          }
+          foreach ($name in $localAssetNames) {
+            if (-not $remoteAssetNameSet.Contains($name)) {
+              throw "Published release is missing allowlisted asset: $name"
+            }
+            if ($remoteAssetSizes[$name] -ne $localAssetSizes[$name]) {
+              throw "Published release asset size for $name does not match local size $($localAssetSizes[$name])"
+            }
+          }
+          foreach ($name in $remoteAssetNames) {
+            if (-not $localAssetNameSet.Contains($name)) {
+              throw "Published release contains unexpected asset: $name"
+            }
           }

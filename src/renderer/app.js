@@ -3,6 +3,7 @@ const $ = selector => document.querySelector(selector);
 
 const ERROR_MESSAGES = Object.freeze({
   IPC_OPERATION_FAILED: '操作失败，请稍后重试。',
+  APP_QUITTING: '应用正在退出，请稍后重试。',
   APP_SNAPSHOT_FAILED: '无法读取应用状态。',
   UNTRUSTED_IPC_SENDER: '请求来源不受信任。',
   WORKSPACE_PICK_FAILED: '无法选择工作区。',

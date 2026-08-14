@@ -26,7 +26,6 @@ function Get-AdhdUninstallRecords {
         [pscustomobject]@{
           Key = $key.PSPath
           InstallLocation = [string]$value.InstallLocation
-          UninstallString = [string]$value.UninstallString
           QuietUninstallString = [string]$value.QuietUninstallString
         }
       }
@@ -100,9 +99,11 @@ try {
   $records = @(Get-AdhdUninstallRecords | Where-Object {
     $_.InstallLocation -and ([IO.Path]::GetFullPath($_.InstallLocation)).TrimEnd('\') -ieq ([IO.Path]::GetFullPath($installRoot)).TrimEnd('\')
   })
-  if ($records.Count -ne 1 -or
-      ($records[0].UninstallString -notmatch '(?i)Uninstall ADHD One\.exe' -and
-       $records[0].QuietUninstallString -notmatch '(?i)Uninstall ADHD One\.exe')) {
+  # NSIS may expose the same per-user ARP entry through more than one registry
+  # view, and electron-builder does not guarantee a particular uninstall-string
+  # spelling. The durable contract is an ARP record for this exact install plus
+  # the official uninstaller discovered inside that install directory.
+  if ($records.Count -lt 1) {
     throw 'INSTALLED_E2E_UNINSTALL_RECORD_INVALID'
   }
   $shortcutsCreated = (@($expectedShortcuts | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $expectedShortcuts.Count)

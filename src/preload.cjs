@@ -8,6 +8,7 @@ const on = (channel, handler) => {
 
 contextBridge.exposeInMainWorld('adhdOne', Object.freeze({
   getAppSnapshot: () => ipcRenderer.invoke('app:snapshot'),
+  quitApp: () => ipcRenderer.invoke('app:quit'),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   openKnownPath: kind => ipcRenderer.invoke('path:open', kind),
   restartRuntime: () => ipcRenderer.invoke('runtime:restart'),

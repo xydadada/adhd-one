@@ -16,9 +16,9 @@ try {
 } catch {
   const npmCli = process.env.npm_execpath;
   if (!npmCli) throw new Error('npm_execpath is unavailable; run this script through npm.');
-  const command = await fs.stat(lockfile).then(() => 'ci').catch(() => 'install');
-  console.log(`Installing the isolated DSH runtime with npm ${command}.`);
-  await execFileAsync(process.execPath, [npmCli, command, '--prefix', runtime], { cwd: root, windowsHide: true });
+  await fs.access(lockfile).catch(error => { throw new Error('Runtime lockfile is required.', { cause: error }); });
+  console.log('Installing the isolated DSH runtime with npm ci.');
+  await execFileAsync(process.execPath, [npmCli, 'ci', '--ignore-scripts', '--prefix', runtime], { cwd: root, windowsHide: true });
 }
 
 await fs.mkdir(bin, { recursive: true });

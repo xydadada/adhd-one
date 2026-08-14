@@ -5,17 +5,72 @@ import type { RuntimeController } from './runtime-controller.js';
 import type { SettingsStore } from './settings-store.js';
 import type { UpdateManager } from './update-manager.js';
 import type { WindowManager } from './window-manager.js';
+import { isTrustedControlUrl } from './security.js';
 
-function trusted(event: IpcMainInvokeEvent): void {
-  if (!event.senderFrame?.url.startsWith('adhd-one://app/')) throw new Error('UNTRUSTED_IPC_SENDER');
+const BRIDGE_ERROR_CODES = new Set<string>([
+  'UNTRUSTED_IPC_SENDER',
+  'APP_SNAPSHOT_FAILED', 'WORKSPACE_PICK_FAILED', 'PATH_NOT_CONFIGURED', 'PATH_OPEN_FAILED',
+  'WORKSPACE_NOT_FOUND', 'WORKSPACE_NOT_DIRECTORY', 'SETTINGS_IO', 'SETTINGS_CORRUPT', 'SETTINGS_LOCKED',
+  'RUNTIME_RESTART_FAILED', 'UPDATE_CHECK_FAILED', 'UPDATE_NOT_AVAILABLE', 'UPDATE_CONFIRM_FAILED',
+  'APP_INSTALL_FAILED', 'PORTABLE_UPDATE_DOWNLOAD_ONLY', 'DOCTOR_FAILED', 'DOCTOR_CONFIRMATION_REQUIRED',
+  'DOCTOR_REPORT_MISSING', 'DOCTOR_COPY_FAILED',
+  'MISSING_CREDENTIAL', 'AUTH', 'QUOTA', 'RATE_LIMIT', 'MODEL_UNAVAILABLE', 'TRANSPORT', 'TIMEOUT',
+  'STREAM_CLOSED', 'MALFORMED_RESPONSE', 'TOOL_ARGUMENT_INVALID', 'TOOL_ESCALATION_REQUIRED',
+  'REASONING_UNSUPPORTED', 'DSH_PROTOCOL_INCOMPATIBLE'
+]);
+
+const CHANNEL_FALLBACK_CODES: Record<string, string> = {
+  'app:snapshot': 'APP_SNAPSHOT_FAILED',
+  'workspace:choose': 'WORKSPACE_PICK_FAILED',
+  'path:open': 'PATH_OPEN_FAILED',
+  'runtime:restart': 'RUNTIME_RESTART_FAILED',
+  'update:check': 'UPDATE_CHECK_FAILED',
+  'update:confirm': 'UPDATE_CONFIRM_FAILED',
+  'doctor:run': 'DOCTOR_FAILED',
+  'doctor:cancel': 'DOCTOR_FAILED',
+  'doctor:copy': 'DOCTOR_COPY_FAILED'
+};
+
+class SecureBridgeError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'SecureBridgeError';
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  if ('code' in error && typeof error.code === 'string') return error.code;
+  if (error instanceof Error && /^[A-Z][A-Z0-9_]*$/u.test(error.message)) return error.message;
+  return undefined;
+}
+
+function stableError(error: unknown, fallback: string): SecureBridgeError {
+  const candidate = errorCode(error);
+  return new SecureBridgeError(candidate && BRIDGE_ERROR_CODES.has(candidate) ? candidate : fallback);
+}
+
+function trusted(event: IpcMainInvokeEvent, windows: WindowManager): void {
+  const control = windows.controlWindow();
+  if (!control || control.isDestroyed() || event.sender.id !== control.webContents.id
+    || event.senderFrame !== event.sender.mainFrame) throw new Error('UNTRUSTED_IPC_SENDER');
+  if (!isTrustedControlUrl(event.senderFrame.url)) throw new Error('UNTRUSTED_IPC_SENDER');
 }
 
 export function installSecureBridge(input: {
   runtime: RuntimeController; settings: SettingsStore; updates: UpdateManager; doctor: ProviderDoctor; windows: WindowManager;
   paths: { data: string; logs: string; dshHome: string };
 }): void {
-  const handle = (channel: string, callback: (event: IpcMainInvokeEvent, value: unknown) => unknown) => ipcMain.handle(channel, async (event, value) => { trusted(event); return callback(event, value); });
-  handle('app:snapshot', () => ({ appVersion: app.getVersion(), runtime: input.runtime.snapshot(), workspace: input.settings.get().workspace, paths: input.paths }));
+  const handle = (channel: string, callback: (event: IpcMainInvokeEvent, value: unknown) => unknown) => ipcMain.handle(channel, async (event, value) => {
+    try {
+      trusted(event, input.windows);
+      return await callback(event, value);
+    } catch (error) {
+      throw stableError(error, CHANNEL_FALLBACK_CODES[channel] ?? 'IPC_OPERATION_FAILED');
+    }
+  });
+  handle('app:snapshot', () => ({ appVersion: app.getVersion(), runtime: input.runtime.snapshot(), workspace: input.settings.get().workspace }));
+  handle('app:quit', () => { setImmediate(() => void input.windows.quit()); return { accepted: true }; });
   handle('workspace:choose', async () => {
     const owner = input.windows.controlWindow();
     const options: OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'], title: '选择 DeepSeek Harness 工作区' };
@@ -26,12 +81,37 @@ export function installSecureBridge(input: {
   handle('path:open', async (_event, value) => {
     const kind = z.enum(['workspace', 'data', 'logs']).parse(value);
     const target = kind === 'workspace' ? input.settings.get().workspace : input.paths[kind];
-    if (!target) throw new Error('PATH_NOT_CONFIGURED'); const error = await shell.openPath(target); if (error) throw new Error(error);
+    if (!target) throw new Error('PATH_NOT_CONFIGURED'); const error = await shell.openPath(target); if (error) throw new Error('PATH_OPEN_FAILED');
   });
   handle('runtime:restart', () => input.runtime.restart());
   handle('update:check', (_event, value) => { const target = z.enum(['app', 'runtime']).parse(value); const settings = input.settings.get(); return input.updates.check(target, target === 'app' ? settings.appChannel : settings.runtimeChannel); });
-  handle('update:confirm', (_event, value) => input.updates.confirm(z.enum(['app', 'runtime']).parse(value)));
-  handle('doctor:run', (_event, value) => input.doctor.run(z.enum(['quick', 'deep']).parse(value)));
+  handle('update:confirm', async (_event, value) => {
+    const target = z.enum(['app', 'runtime']).parse(value);
+    if (target === 'app' && input.updates.isPortable()) {
+      const snapshot = input.updates.snapshot('app');
+      if (!snapshot.canConfirm || !snapshot.candidateVersion) throw new Error('UPDATE_NOT_AVAILABLE');
+      await shell.openExternal(`https://github.com/xydadada/adhd-one/releases/tag/v${encodeURIComponent(snapshot.candidateVersion)}`);
+      return;
+    }
+    try { await input.updates.confirm(target); }
+    catch { throw new Error('UPDATE_CONFIRM_FAILED'); }
+    if (target === 'app') {
+      await input.runtime.stop();
+      try { input.updates.quitAndInstall(); }
+      catch { await input.runtime.start().catch(() => undefined); throw new Error('APP_INSTALL_FAILED'); }
+    }
+    else await input.runtime.restart();
+  });
+  handle('doctor:run', async (_event, value) => {
+    const mode = z.enum(['quick', 'deep']).parse(value);
+    if (mode === 'deep') {
+      const owner = input.windows.controlWindow();
+      const options = { type: 'warning' as const, title: '确认 Provider 深度检查', message: '这会使用当前默认模型执行一次真实工具调用，可能产生小额费用。', buttons: ['继续', '取消'], defaultId: 1, cancelId: 1 };
+      const answer = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+      if (answer.response !== 0) throw new Error('DOCTOR_CONFIRMATION_REQUIRED');
+    }
+    return input.doctor.run(mode);
+  });
   handle('doctor:cancel', () => input.doctor.cancel());
   handle('doctor:copy', () => { const report = input.doctor.report(); if (!report) throw new Error('DOCTOR_REPORT_MISSING'); clipboard.writeText(JSON.stringify(report, null, 2)); });
 }

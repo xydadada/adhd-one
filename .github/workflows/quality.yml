@@ -1,0 +1,78 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  security-events: write
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runtime/package-lock.json
+      - name: actionlint
+        uses: reviewdog/action-actionlint@7d2a9fc6ece53c6e55c4ccda057a7ab9970e5348
+        with:
+          reporter: github-check
+          fail_level: error
+      - name: Dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@1e966ba708e4b64bb0c9bfb7abb5a232840be16a
+      - run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts --prefix runtime
+      - name: Generate and check physical license closure
+        run: npm run license:closure:gate
+      - name: TypeScript and Vitest
+        run: npm run check
+      - name: npm audit
+        run: |
+          npm audit --audit-level=high
+          npm audit --prefix runtime --audit-level=high
+      - name: npm audit signatures
+        run: npm run audit:signatures
+      - name: Production license policy
+        run: >-
+          npm exec --no -- license-checker-rseidelsohn
+          --production
+          --onlyAllow "MIT;ISC;Apache-2.0;BSD-2-Clause;BSD-3-Clause;BlueOak-1.0.0;Python-2.0"
+          --summary
+      - name: Runtime license policy
+        run: >-
+          npm exec --no -- license-checker-rseidelsohn
+          --start runtime
+          --production
+          --excludePackages adhd-dsh-runtime
+          --onlyAllow "MIT;ISC;Apache-2.0;LGPL-3.0-or-later;Apache-2.0 AND LGPL-3.0-or-later;BSD-2-Clause;BSD-3-Clause;BlueOak-1.0.0;Python-2.0;0BSD"
+          --summary
+
+  codeql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324

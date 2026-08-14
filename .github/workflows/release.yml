@@ -4,38 +4,793 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
-  release:
+  build:
     runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
+      runtime_name: ${{ steps.release-assets.outputs.runtime_name }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: 24.18.0, cache: npm }
+      - name: Checkout tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runtime/package-lock.json
+      - name: Verify checkout identity and strict release version
+        id: release-version
+        shell: pwsh
+        env:
+          EXPECTED_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to resolve the checked-out commit'
+          }
+          if ($head.ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Checked-out HEAD $head does not equal github.sha $env:EXPECTED_SHA"
+          }
+          $expectedTagRef = "refs/tags/$($env:RELEASE_TAG)"
+          if ($env:EXPECTED_REF -ne $expectedTagRef) {
+            throw "Release ref $env:EXPECTED_REF is not the expected tag ref $expectedTagRef"
+          }
+
+          $vSemVerPattern = '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          $regexOptions = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+          if (-not [regex]::IsMatch($env:RELEASE_TAG, $vSemVerPattern, $regexOptions)) {
+            throw "Release tag is not strict vSemVer: $env:RELEASE_TAG"
+          }
+
+          $packageVersion = (node -p "require('./package.json').version").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($packageVersion)) {
+            throw 'Unable to read package.json version'
+          }
+          if (-not [regex]::IsMatch("v$packageVersion", $vSemVerPattern, $regexOptions)) {
+            throw "package.json version is not strict SemVer: $packageVersion"
+          }
+          if ($packageVersion -ne $env:RELEASE_TAG.Substring(1)) {
+            throw "package.json version $packageVersion does not match tag $env:RELEASE_TAG"
+          }
+          "version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - run: npm ci --ignore-scripts
       - run: npm ci --ignore-scripts --prefix runtime
+      - run: npm run audit:signatures
       - run: npm run check
+      - name: Generate and check physical license closure
+        run: npm run license:closure:gate
+      - name: Fail if dist is nonempty before build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          if (Test-Path -LiteralPath $dist -PathType Leaf) {
+            throw 'dist exists as a file before build; refusing to delete or replace it'
+          }
+          if (Test-Path -LiteralPath $dist -PathType Container) {
+            $existing = @(Get-ChildItem -LiteralPath $dist -Force)
+            if ($existing.Count -gt 0) {
+              $names = ($existing | Select-Object -ExpandProperty Name) -join ', '
+              throw "dist must be empty before build; refusing to delete existing item(s): $names"
+            }
+          }
       - run: npm run build:win
+      - name: Verify packaged license closure carrier
+        run: node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked
+      - run: npm run verify:fuses -- "dist/win-unpacked/ADHD One.exe"
+      - name: Packaged win-unpacked E2E
+        shell: pwsh
+        run: >-
+          node scripts/e2e/packaged.mjs
+          --exe "dist/win-unpacked/ADHD One.exe"
+          --output evidence/release-packaged.json
+          --cycles 1
+      - name: NSIS installed E2E suite and uninstall residue check
+        shell: pwsh
+        run: |
+          ./scripts/e2e/installed.ps1 `
+            -SetupPath "dist/ADHD-One-Setup-${{ steps.release-version.outputs.version }}-x64.exe" `
+            -EvidenceDirectory evidence/release-installed
+      - name: Portable ZIP launch E2E
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $PWD "dist/ADHD-One-Portable-${{ steps.release-version.outputs.version }}-win-x64.zip"
+          $root = Join-Path $env:RUNNER_TEMP "adhd-one-release-portable-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $root | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $root
+          $apps = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'ADHD One.exe')
+          if ($apps.Count -ne 1) { throw "Expected exactly one portable executable, found $($apps.Count)" }
+          node scripts/e2e/packaged.mjs --exe $apps[0].FullName --output evidence/release-portable.json --scenario launch --cycles 1
+          if ($LASTEXITCODE -ne 0) { throw 'Release portable E2E failed' }
+      - name: Upload release E2E evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-e2e-${{ github.ref_name }}
+          path: evidence/**/*.json
+          if-no-files-found: warn
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           path: .
           format: spdx-json
-          output-file: dist/ADHD-One-0.2.0.spdx.json
+          output-file: dist/ADHD-One-${{ steps.release-version.outputs.version }}.spdx.json
       - name: Generate runtime manifest and checksums
         run: node scripts/generate-release-metadata.mjs
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
-        with: { subject-path: 'dist/ADHD-One-*' }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with: { name: release-assets, path: 'dist/*' }
+      - name: Verify built release assets
+        id: release-assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          $manifestPath = Join-Path $dist 'runtime-manifest.json'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw 'Missing runtime-manifest.json'
+          }
+          $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+          $runtimeName = [string]$manifest.asset.name
+          if ([string]::IsNullOrWhiteSpace($runtimeName) -or
+              [System.IO.Path]::GetFileName($runtimeName) -ne $runtimeName -or
+              $runtimeName -notmatch '^ADHD-One-Runtime-[0-9A-Za-z.-]+-win-x64\.7z$') {
+            throw "runtime-manifest.json asset.name is not a safe runtime asset name: $runtimeName"
+          }
+          $sbomName = "ADHD-One-$env:RELEASE_VERSION.spdx.json"
+          # Primary release subjects are the files covered by SHA256SUMS.txt.
+          # SHA256SUMS.txt is the manifest itself and must never be its own subject.
+          $primarySubjects = @(
+            "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe",
+            "ADHD-One-Portable-$env:RELEASE_VERSION-win-x64.zip",
+            $runtimeName,
+            $sbomName,
+            'latest.yml',
+            'runtime-manifest.json',
+            'THIRD_PARTY_NOTICES.md'
+          )
+          $checksumName = 'SHA256SUMS.txt'
+          $requiredReleaseFiles = $primarySubjects + $checksumName
+          foreach ($name in $requiredReleaseFiles) {
+            $path = Join-Path $dist $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing required release asset: $name"
+            }
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Empty required release asset: $name"
+            }
+          }
+
+          $latest = Get-Content -Raw -LiteralPath (Join-Path $dist 'latest.yml')
+          $latestVersionMatch = [regex]::Match($latest, '(?m)^version:\s*([^\r\n]+)\s*$')
+          if (-not $latestVersionMatch.Success -or $latestVersionMatch.Groups[1].Value.Trim() -ne $env:RELEASE_VERSION) {
+            throw "latest.yml version does not match $env:RELEASE_VERSION"
+          }
+
+          if ([string]$manifest.minAppVersion -ne $env:RELEASE_VERSION) {
+            throw 'runtime-manifest.json minAppVersion does not match the release version'
+          }
+          $expectedUrl = "https://github.com/xydadada/adhd-one/releases/download/$env:RELEASE_TAG/$runtimeName"
+          if ([string]$manifest.asset.url -ne $expectedUrl) {
+            throw 'runtime-manifest.json asset.url does not point to this release tag'
+          }
+          if ([string]$manifest.asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'runtime-manifest.json asset.sha256 is not a SHA-256 digest'
+          }
+          if ($null -eq $manifest.asset.size -or [int64]$manifest.asset.size -le 0) {
+            throw 'runtime-manifest.json asset.size is not a positive integer'
+          }
+          if ([string]$manifest.attestation.repository -ne 'xydadada/adhd-one') {
+            throw 'runtime-manifest.json attestation.repository is not this repository'
+          }
+          if ([string]$manifest.attestation.workflow -ne '.github/workflows/release.yml') {
+            throw 'runtime-manifest.json attestation.workflow is not the release workflow'
+          }
+          $expectedRef = "refs/tags/$env:RELEASE_TAG"
+          if ([string]$manifest.attestation.ref -ne $expectedRef) {
+            throw 'runtime-manifest.json attestation.ref does not match this release tag'
+          }
+
+          $runtimePath = Join-Path $dist $runtimeName
+          $actualRuntimeSize = (Get-Item -LiteralPath $runtimePath).Length
+          if ([int64]$manifest.asset.size -ne $actualRuntimeSize) {
+            throw "runtime-manifest.json asset.size $($manifest.asset.size) does not match $actualRuntimeSize"
+          }
+          $actualRuntimeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimePath).Hash.ToLowerInvariant()
+          if ($actualRuntimeSha256 -ne [string]$manifest.asset.sha256) {
+            throw 'runtime-manifest.json asset.sha256 does not match the runtime asset'
+          }
+          $expectedSubjectDigest = "sha256:$actualRuntimeSha256"
+          if ([string]$manifest.attestation.subjectDigest -ne $expectedSubjectDigest) {
+            throw 'runtime-manifest.json attestation.subjectDigest does not match the runtime asset'
+          }
+
+          $checksumLines = @(Get-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt'))
+          $parsedChecksums = @{}
+          foreach ($line in $checksumLines) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed SHA256SUMS line: $line" }
+            if ($parsedChecksums.ContainsKey($Matches[2])) { throw "Duplicate SHA256SUMS entry: $($Matches[2])" }
+            $parsedChecksums[$Matches[2]] = $Matches[1]
+          }
+          if ($parsedChecksums.ContainsKey($checksumName)) {
+            throw 'SHA256SUMS.txt must not contain a self-reference'
+          }
+          $unexpectedChecksumEntries = @($parsedChecksums.Keys | Where-Object { $_ -notin $primarySubjects })
+          if ($unexpectedChecksumEntries.Count -gt 0) {
+            throw "SHA256SUMS.txt contains non-primary subject(s): $($unexpectedChecksumEntries -join ', ')"
+          }
+          if ($parsedChecksums.Count -ne $primarySubjects.Count) {
+            throw 'SHA256SUMS.txt must contain exactly the primary release subjects'
+          }
+          foreach ($name in $primarySubjects) {
+            if (-not $parsedChecksums.ContainsKey($name)) { throw "SHA256SUMS.txt has no entry for $name" }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dist $name)).Hash.ToLowerInvariant()
+            if ($actual -ne $parsedChecksums[$name]) { throw "SHA256 mismatch for $name" }
+          }
+          $latestPathMatch = [regex]::Match($latest, '(?m)^path:\s*([^\r\n]+)\s*$')
+          $latestSha512Match = [regex]::Match($latest, '(?m)^sha512:\s*([^\r\n]+)\s*$')
+          if (-not $latestPathMatch.Success -or -not $latestSha512Match.Success) {
+            throw 'latest.yml is missing path or sha512'
+          }
+          $latestPath = $latestPathMatch.Groups[1].Value.Trim()
+          $latestSha512 = $latestSha512Match.Groups[1].Value.Trim()
+          $expectedSetup = "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe"
+          if ($latestPath -ne $expectedSetup) { throw "latest.yml path does not match $expectedSetup" }
+          $setupBytes = [System.IO.File]::ReadAllBytes((Join-Path $dist $expectedSetup))
+          $actualSha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($setupBytes))
+          if ($actualSha512 -ne $latestSha512) { throw 'latest.yml SHA-512 does not match Setup' }
+          "runtime_name=$runtimeName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Upload one controlled release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-assets-${{ github.ref_name }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            dist/ADHD-One-Setup-${{ steps.release-version.outputs.version }}-x64.exe
+            dist/ADHD-One-Portable-${{ steps.release-version.outputs.version }}-win-x64.zip
+            dist/${{ steps.release-assets.outputs.runtime_name }}
+            dist/ADHD-One-${{ steps.release-version.outputs.version }}.spdx.json
+            dist/latest.yml
+            dist/runtime-manifest.json
+            dist/SHA256SUMS.txt
+            dist/THIRD_PARTY_NOTICES.md
+
+  publish:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: release
+    env:
+      RELEASE_PREDICATE_TYPE: https://in-toto.io/attestation/release/v0.1
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+      - name: Verify publish checkout and strict release version
+        id: publish-version
+        shell: pwsh
+        env:
+          EXPECTED_REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to resolve the checked-out commit'
+          }
+          if ($head.ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Checked-out HEAD $head does not equal github.sha $env:EXPECTED_SHA"
+          }
+          $expectedTagRef = "refs/tags/$($env:RELEASE_TAG)"
+          if ($env:EXPECTED_REF -ne $expectedTagRef) {
+            throw "Release ref $env:EXPECTED_REF is not the expected tag ref $expectedTagRef"
+          }
+
+          $vSemVerPattern = '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          $regexOptions = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+          if (-not [regex]::IsMatch($env:RELEASE_TAG, $vSemVerPattern, $regexOptions)) {
+            throw "Release tag is not strict vSemVer: $env:RELEASE_TAG"
+          }
+          $package = Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json
+          $packageVersion = [string]$package.version
+          if (-not [regex]::IsMatch("v$packageVersion", $vSemVerPattern, $regexOptions)) {
+            throw "package.json version is not strict SemVer: $packageVersion"
+          }
+          if ($packageVersion -ne $env:RELEASE_TAG.Substring(1)) {
+            throw "package.json version $packageVersion does not match tag $env:RELEASE_TAG"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:BUILD_VERSION) -or $env:BUILD_VERSION -ne $packageVersion) {
+            throw "Build job version $env:BUILD_VERSION does not match publish version $packageVersion"
+          }
+          "version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Download one controlled release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: dist
+      - name: Recalculate digests and verify artifact version and allowlist
+        id: release-assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.publish-version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_RUNTIME_NAME: ${{ needs.build.outputs.runtime_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          if (-not (Test-Path -LiteralPath $dist -PathType Container)) {
+            throw 'Downloaded release artifact did not create dist'
+          }
+          $manifestPath = Join-Path $dist 'runtime-manifest.json'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw 'Downloaded artifact is missing runtime-manifest.json'
+          }
+          $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+          $runtimeName = [string]$manifest.asset.name
+          if ([string]::IsNullOrWhiteSpace($runtimeName) -or
+              [System.IO.Path]::GetFileName($runtimeName) -ne $runtimeName -or
+              $runtimeName -notmatch '^ADHD-One-Runtime-[0-9A-Za-z.-]+-win-x64\.7z$') {
+            throw "runtime-manifest.json asset.name is not a safe runtime asset name: $runtimeName"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:BUILD_RUNTIME_NAME) -or $runtimeName -ne $env:BUILD_RUNTIME_NAME) {
+            throw "Artifact runtime name $runtimeName does not match build output $env:BUILD_RUNTIME_NAME"
+          }
+          $sbomName = "ADHD-One-$env:RELEASE_VERSION.spdx.json"
+          # The downloaded artifact contains the primary subjects plus their checksum manifest.
+          # The manifest itself is intentionally not a primary subject and is not self-hashed.
+          $primarySubjects = @(
+            "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe",
+            "ADHD-One-Portable-$env:RELEASE_VERSION-win-x64.zip",
+            $runtimeName,
+            $sbomName,
+            'latest.yml',
+            'runtime-manifest.json',
+            'THIRD_PARTY_NOTICES.md'
+          )
+          $checksumName = 'SHA256SUMS.txt'
+          $downloadedFiles = $primarySubjects + $checksumName
+          $entries = @(Get-ChildItem -LiteralPath $dist -Force)
+          $directories = @($entries | Where-Object { $_.PSIsContainer })
+          if ($directories.Count -gt 0) {
+            throw "Downloaded artifact contains directories: $(($directories | Select-Object -ExpandProperty Name) -join ', ')"
+          }
+          $actualNames = @($entries | Select-Object -ExpandProperty Name)
+          if ($actualNames.Count -ne $downloadedFiles.Count) {
+            throw "Downloaded artifact file count $($actualNames.Count) does not equal allowlist count $($downloadedFiles.Count)"
+          }
+          foreach ($name in $downloadedFiles) {
+            if ($name -notin $actualNames) { throw "Downloaded artifact is missing allowlisted file: $name" }
+            if ((Get-Item -LiteralPath (Join-Path $dist $name)).Length -le 0) {
+              throw "Downloaded artifact contains an empty file: $name"
+            }
+          }
+          foreach ($name in $actualNames) {
+            if ($name -notin $downloadedFiles) { throw "Downloaded artifact contains unexpected file: $name" }
+          }
+
+          $latest = Get-Content -Raw -LiteralPath (Join-Path $dist 'latest.yml')
+          $latestVersionMatch = [regex]::Match($latest, '(?m)^version:\s*([^\r\n]+)\s*$')
+          if (-not $latestVersionMatch.Success -or $latestVersionMatch.Groups[1].Value.Trim() -ne $env:RELEASE_VERSION) {
+            throw "latest.yml version does not match $env:RELEASE_VERSION"
+          }
+          if ([string]$manifest.minAppVersion -ne $env:RELEASE_VERSION) {
+            throw 'runtime-manifest.json minAppVersion does not match the release version'
+          }
+          $expectedUrl = "https://github.com/xydadada/adhd-one/releases/download/$env:RELEASE_TAG/$runtimeName"
+          if ([string]$manifest.asset.url -ne $expectedUrl) {
+            throw 'runtime-manifest.json asset.url does not point to this release tag'
+          }
+          if ([string]$manifest.asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'runtime-manifest.json asset.sha256 is not a SHA-256 digest'
+          }
+          if ($null -eq $manifest.asset.size -or [int64]$manifest.asset.size -le 0) {
+            throw 'runtime-manifest.json asset.size is not a positive integer'
+          }
+          if ([string]$manifest.attestation.repository -ne 'xydadada/adhd-one' -or
+              [string]$manifest.attestation.workflow -ne '.github/workflows/release.yml') {
+            throw 'runtime-manifest.json attestation identity is not this release workflow'
+          }
+          $expectedRef = "refs/tags/$env:RELEASE_TAG"
+          if ([string]$manifest.attestation.ref -ne $expectedRef) {
+            throw 'runtime-manifest.json attestation.ref does not match this release tag'
+          }
+
+          $runtimePath = Join-Path $dist $runtimeName
+          $actualRuntimeSize = (Get-Item -LiteralPath $runtimePath).Length
+          if ([int64]$manifest.asset.size -ne $actualRuntimeSize) {
+            throw "runtime-manifest.json asset.size $($manifest.asset.size) does not match $actualRuntimeSize"
+          }
+          $actualRuntimeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $runtimePath).Hash.ToLowerInvariant()
+          if ($actualRuntimeSha256 -ne [string]$manifest.asset.sha256) {
+            throw 'runtime-manifest.json asset.sha256 does not match the downloaded runtime asset'
+          }
+          $expectedSubjectDigest = "sha256:$actualRuntimeSha256"
+          if ([string]$manifest.attestation.subjectDigest -ne $expectedSubjectDigest) {
+            throw 'runtime-manifest.json attestation.subjectDigest does not match the downloaded runtime asset'
+          }
+
+          $checksumLines = @(Get-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt'))
+          $parsedChecksums = @{}
+          foreach ($line in $checksumLines) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed SHA256SUMS line: $line" }
+            if ($parsedChecksums.ContainsKey($Matches[2])) { throw "Duplicate SHA256SUMS entry: $($Matches[2])" }
+            $parsedChecksums[$Matches[2]] = $Matches[1]
+          }
+          if ($parsedChecksums.ContainsKey($checksumName)) {
+            throw 'SHA256SUMS.txt must not contain a self-reference'
+          }
+          $unexpectedChecksumEntries = @($parsedChecksums.Keys | Where-Object { $_ -notin $primarySubjects })
+          if ($unexpectedChecksumEntries.Count -gt 0) {
+            throw "SHA256SUMS.txt contains non-primary subject(s): $($unexpectedChecksumEntries -join ', ')"
+          }
+          if ($parsedChecksums.Count -ne $primarySubjects.Count) {
+            throw 'SHA256SUMS.txt must contain exactly the primary release subjects'
+          }
+          foreach ($name in $primarySubjects) {
+            if (-not $parsedChecksums.ContainsKey($name)) { throw "SHA256SUMS.txt has no entry for $name" }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dist $name)).Hash.ToLowerInvariant()
+            if ($actual -ne $parsedChecksums[$name]) { throw "SHA256 mismatch for $name" }
+          }
+          $latestPathMatch = [regex]::Match($latest, '(?m)^path:\s*([^\r\n]+)\s*$')
+          $latestSha512Match = [regex]::Match($latest, '(?m)^sha512:\s*([^\r\n]+)\s*$')
+          if (-not $latestPathMatch.Success -or -not $latestSha512Match.Success) {
+            throw 'latest.yml is missing path or sha512'
+          }
+          $latestPath = $latestPathMatch.Groups[1].Value.Trim()
+          $latestSha512 = $latestSha512Match.Groups[1].Value.Trim()
+          $expectedSetup = "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe"
+          if ($latestPath -ne $expectedSetup) { throw "latest.yml path does not match $expectedSetup" }
+          $setupBytes = [System.IO.File]::ReadAllBytes((Join-Path $dist $expectedSetup))
+          $actualSha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($setupBytes))
+          if ($actualSha512 -ne $latestSha512) { throw 'latest.yml SHA-512 does not match Setup' }
+          "runtime_name=$runtimeName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Re-verify release tag before attestation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apiPath = "repos/$env:RELEASE_REPOSITORY/git/ref/tags/$env:RELEASE_TAG"
+          $remoteRefJson = (& gh api $apiPath | Out-String)
+          $remoteRefExitCode = $LASTEXITCODE
+          if ($remoteRefExitCode -ne 0) {
+            throw "GitHub API tag lookup failed with exit code $remoteRefExitCode"
+          }
+          try {
+            $remoteRef = $remoteRefJson | ConvertFrom-Json
+          } catch {
+            throw 'GitHub API tag lookup returned invalid JSON'
+          }
+          $remoteSha = [string]$remoteRef.object.sha
+          $remoteType = [string]$remoteRef.object.type
+          if ($remoteType -eq 'tag') {
+            $tagObjectPath = "repos/$env:RELEASE_REPOSITORY/git/tags/$remoteSha"
+            $tagObjectJson = (& gh api $tagObjectPath | Out-String)
+            $tagObjectExitCode = $LASTEXITCODE
+            if ($tagObjectExitCode -ne 0) {
+              throw "GitHub API annotated-tag lookup failed with exit code $tagObjectExitCode"
+            }
+            $tagObject = $tagObjectJson | ConvertFrom-Json
+            $remoteSha = [string]$tagObject.object.sha
+            $remoteType = [string]$tagObject.object.type
+          }
+          if ($remoteType -ne 'commit' -or [string]::IsNullOrWhiteSpace($remoteSha)) {
+            throw "GitHub API tag does not resolve to a commit: type=$remoteType sha=$remoteSha"
+          }
+          if ($remoteSha.Trim().ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Remote tag $env:RELEASE_TAG resolves to $remoteSha, expected github.sha $env:EXPECTED_SHA"
+          }
+
+          $tagRef = "refs/tags/$($env:RELEASE_TAG)"
+          $localSha = (& git rev-parse --verify "${tagRef}^{commit}" 2>$null | Out-String).Trim()
+          $localExitCode = $LASTEXITCODE
+          if ($localExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($localSha)) {
+            throw "Unable to resolve local $tagRef as a commit"
+          }
+          if ($localSha.ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Local $tagRef resolves to $localSha, expected github.sha $env:EXPECTED_SHA"
+          }
+      - name: Attest release assets
+        id: provenance
+        uses: actions/attest@ce27ba3b4a9a139d9a20a4a07d69fabb52f1e5bc
+        with:
+          # Attest only primary subjects; checksum and verifier files are manifests/sidecars.
+          subject-path: |
+            dist/ADHD-One-Setup-${{ steps.publish-version.outputs.version }}-x64.exe
+            dist/ADHD-One-Portable-${{ steps.publish-version.outputs.version }}-win-x64.zip
+            dist/${{ steps.release-assets.outputs.runtime_name }}
+            dist/ADHD-One-${{ steps.publish-version.outputs.version }}.spdx.json
+            dist/latest.yml
+            dist/runtime-manifest.json
+            dist/THIRD_PARTY_NOTICES.md
+          predicate-type: ${{ env.RELEASE_PREDICATE_TYPE }}
+          predicate: '{}'
+      - name: Preserve offline attestation bundle and trusted root
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.publish-version.outputs.version }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          if ([string]::IsNullOrWhiteSpace($env:BUNDLE_PATH) -or -not (Test-Path -LiteralPath $env:BUNDLE_PATH -PathType Leaf)) {
+            throw "actions/attest did not produce a readable bundle: $env:BUNDLE_PATH"
+          }
+          # These files are verification sidecars, not primary release subjects.
+          # Generate their second-level checksum only after both sidecars exist.
+          $bundleName = "ADHD-One-$env:RELEASE_VERSION.attestation.json"
+          $trustedRootName = "ADHD-One-$env:RELEASE_VERSION.trusted_root.jsonl"
+          $verifierChecksumName = 'VERIFIER-SHA256SUMS.txt'
+          $verifierSubjects = @($bundleName, $trustedRootName)
+          if ($verifierSubjects -contains $verifierChecksumName) {
+            throw 'VERIFIER-SHA256SUMS.txt must not contain a self-reference'
+          }
+
+          $bundleDestination = Join-Path $dist $bundleName
+          Copy-Item -LiteralPath $env:BUNDLE_PATH -Destination $bundleDestination
+          if ((Get-Item -LiteralPath $bundleDestination).Length -le 0) {
+            throw 'Offline attestation bundle is empty'
+          }
+          $trustedRootDestination = Join-Path $dist $trustedRootName
+          gh attestation trusted-root > $trustedRootDestination
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh attestation trusted-root failed with exit code $LASTEXITCODE"
+          }
+          if ((Get-Item -LiteralPath $trustedRootDestination).Length -le 0) {
+            throw 'Trusted root output is empty'
+          }
+
+          $verifierChecksumPath = Join-Path $dist $verifierChecksumName
+          $verifierLines = foreach ($name in $verifierSubjects) {
+            $path = Join-Path $dist $name
+            $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            "$digest  $name"
+          }
+          $verifierLines | Set-Content -LiteralPath $verifierChecksumPath -Encoding utf8
+          if (-not (Test-Path -LiteralPath $verifierChecksumPath -PathType Leaf) -or
+              (Get-Item -LiteralPath $verifierChecksumPath).Length -le 0) {
+            throw 'VERIFIER-SHA256SUMS.txt was not generated'
+          }
+      - name: Verify release subjects offline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.publish-version.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RUNTIME_NAME: ${{ steps.release-assets.outputs.runtime_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          $bundlePath = Join-Path $dist "ADHD-One-$env:RELEASE_VERSION.attestation.json"
+          $trustedRootPath = Join-Path $dist "ADHD-One-$env:RELEASE_VERSION.trusted_root.jsonl"
+          $repo = 'xydadada/adhd-one'
+          $signerWorkflow = 'github.com/xydadada/adhd-one/.github/workflows/release.yml'
+          $sourceRef = "refs/tags/$env:RELEASE_TAG"
+          # Offline verification covers the same primary subjects signed by actions/attest.
+          $primarySubjects = @(
+            "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe",
+            "ADHD-One-Portable-$env:RELEASE_VERSION-win-x64.zip",
+            $env:RUNTIME_NAME,
+            "ADHD-One-$env:RELEASE_VERSION.spdx.json",
+            'latest.yml',
+            'runtime-manifest.json',
+            'THIRD_PARTY_NOTICES.md'
+          )
+          $runtimeVerification = $null
+          foreach ($name in $primarySubjects) {
+            $path = Join-Path $dist $name
+            $verifyArguments = @(
+              'attestation', 'verify', $path,
+              '--repo', $repo,
+              '--bundle', $bundlePath,
+              '--custom-trusted-root', $trustedRootPath,
+              '--predicate-type', $env:RELEASE_PREDICATE_TYPE,
+              '--signer-workflow', $signerWorkflow,
+              '--source-ref', $sourceRef,
+              '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com',
+              '--format', 'json'
+            )
+            $verificationOutput = (& gh @verifyArguments | Out-String)
+            $verificationExitCode = $LASTEXITCODE
+            if ($verificationExitCode -ne 0) {
+              throw "Offline attestation verification failed for $name with exit code $verificationExitCode"
+            }
+            if ([string]::IsNullOrWhiteSpace($verificationOutput)) {
+              throw "Offline attestation verification returned no result for $name"
+            }
+            $verification = $verificationOutput | ConvertFrom-Json
+            if ($name -eq $env:RUNTIME_NAME) {
+              $runtimeVerification = @($verification)
+            }
+          }
+          if ($null -eq $runtimeVerification) {
+            throw 'Runtime asset was not included in the offline verification set'
+          }
+          $manifest = Get-Content -Raw -LiteralPath (Join-Path $dist 'runtime-manifest.json') | ConvertFrom-Json
+          $runtimeStatements = @(
+            $runtimeVerification |
+              ForEach-Object { $_.verificationResult.statement.subject } |
+              ForEach-Object { $_ }
+          )
+          $runtimeMatches = @($runtimeStatements | Where-Object {
+            $subjectName = [string]$_.name
+            [string]$_.digest.sha256 -eq [string]$manifest.asset.sha256 -and
+              ($subjectName -eq $env:RUNTIME_NAME -or $subjectName.EndsWith($env:RUNTIME_NAME, [System.StringComparison]::OrdinalIgnoreCase))
+          })
+          if ($runtimeMatches.Count -ne 1) {
+            throw 'Offline attestation subject does not uniquely match runtime-manifest.json asset.sha256'
+          }
+          if ("sha256:$([string]$runtimeMatches[0].digest.sha256)" -ne [string]$manifest.attestation.subjectDigest) {
+            throw 'Offline attestation runtime subject does not match runtime-manifest.json attestation.subjectDigest'
+          }
+      - name: Verify final release file allowlist and digests
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.publish-version.outputs.version }}
+          RUNTIME_NAME: ${{ steps.release-assets.outputs.runtime_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          $primarySubjects = @(
+            "ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe",
+            "ADHD-One-Portable-$env:RELEASE_VERSION-win-x64.zip",
+            $env:RUNTIME_NAME,
+            "ADHD-One-$env:RELEASE_VERSION.spdx.json",
+            'latest.yml',
+            'runtime-manifest.json',
+            'THIRD_PARTY_NOTICES.md'
+          )
+          $checksumName = 'SHA256SUMS.txt'
+          $bundleName = "ADHD-One-$env:RELEASE_VERSION.attestation.json"
+          $trustedRootName = "ADHD-One-$env:RELEASE_VERSION.trusted_root.jsonl"
+          $verifierChecksumName = 'VERIFIER-SHA256SUMS.txt'
+          $verifierSubjects = @($bundleName, $trustedRootName)
+          # SHA256SUMS.txt covers primary subjects; verifier sidecars have a separate manifest.
+          $finalSubjects = $primarySubjects + $checksumName + $bundleName + $trustedRootName + $verifierChecksumName
+          $entries = @(Get-ChildItem -LiteralPath $dist -Force)
+          $directories = @($entries | Where-Object { $_.PSIsContainer })
+          if ($directories.Count -gt 0) {
+            throw "Release directory contains unexpected directories: $(($directories | Select-Object -ExpandProperty Name) -join ', ')"
+          }
+          $actualNames = @($entries | Select-Object -ExpandProperty Name)
+          if ($actualNames.Count -ne $finalSubjects.Count) {
+            throw "Release file count $($actualNames.Count) does not equal allowlist count $($finalSubjects.Count)"
+          }
+          foreach ($name in $finalSubjects) {
+            if ($name -notin $actualNames) { throw "Release file allowlist is missing: $name" }
+            $path = Join-Path $dist $name
+            if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Release file is empty: $name" }
+            $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            if ($digest -notmatch '^[0-9a-f]{64}$') { throw "Invalid SHA-256 digest for $name" }
+          }
+          foreach ($name in $actualNames) {
+            if ($name -notin $finalSubjects) { throw "Release file allowlist contains unexpected file: $name" }
+          }
+
+          $verifierChecksumLines = @(Get-Content -LiteralPath (Join-Path $dist $verifierChecksumName))
+          $parsedVerifierChecksums = @{}
+          foreach ($line in $verifierChecksumLines) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+              throw "Malformed VERIFIER-SHA256SUMS line: $line"
+            }
+            if ($parsedVerifierChecksums.ContainsKey($Matches[2])) {
+              throw "Duplicate VERIFIER-SHA256SUMS entry: $($Matches[2])"
+            }
+            $parsedVerifierChecksums[$Matches[2]] = $Matches[1]
+          }
+          if ($parsedVerifierChecksums.ContainsKey($verifierChecksumName)) {
+            throw 'VERIFIER-SHA256SUMS.txt must not contain a self-reference'
+          }
+          $unexpectedVerifierEntries = @($parsedVerifierChecksums.Keys | Where-Object { $_ -notin $verifierSubjects })
+          if ($unexpectedVerifierEntries.Count -gt 0) {
+            throw "VERIFIER-SHA256SUMS.txt contains non-verifier file(s): $($unexpectedVerifierEntries -join ', ')"
+          }
+          if ($parsedVerifierChecksums.Count -ne $verifierSubjects.Count) {
+            throw 'VERIFIER-SHA256SUMS.txt must contain exactly the verifier sidecars'
+          }
+          foreach ($name in $verifierSubjects) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dist $name)).Hash.ToLowerInvariant()
+            if ($actual -ne $parsedVerifierChecksums[$name]) {
+              throw "Verifier sidecar SHA256 mismatch for $name"
+            }
+          }
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.publish-version.outputs.version }}
+          RUNTIME_NAME: ${{ steps.release-assets.outputs.runtime_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
-          $releaseFlags = @()
-          if ($env:GITHUB_REF_NAME.Contains('-')) { $releaseFlags += '--prerelease' }
-          gh release create $env:GITHUB_REF_NAME @releaseFlags --title "ADHD One $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md dist/ADHD-One-* dist/SHA256SUMS.txt dist/runtime-manifest.json
+          $ErrorActionPreference = 'Stop'
+          $assets = @(
+            "dist/ADHD-One-Setup-$env:RELEASE_VERSION-x64.exe",
+            "dist/ADHD-One-Portable-$env:RELEASE_VERSION-win-x64.zip",
+            "dist/$env:RUNTIME_NAME",
+            "dist/ADHD-One-$env:RELEASE_VERSION.spdx.json",
+            "dist/ADHD-One-$env:RELEASE_VERSION.attestation.json",
+            "dist/ADHD-One-$env:RELEASE_VERSION.trusted_root.jsonl",
+            'dist/latest.yml',
+            'dist/runtime-manifest.json',
+            'dist/SHA256SUMS.txt',
+            'dist/THIRD_PARTY_NOTICES.md',
+            'dist/VERIFIER-SHA256SUMS.txt'
+          )
+
+          # Re-check the remote and local tag immediately before release creation.
+          $apiPath = "repos/$env:RELEASE_REPOSITORY/git/ref/tags/$env:GITHUB_REF_NAME"
+          $remoteRefJson = (& gh api $apiPath | Out-String)
+          $remoteRefExitCode = $LASTEXITCODE
+          if ($remoteRefExitCode -ne 0) {
+            throw "GitHub API tag lookup failed with exit code $remoteRefExitCode"
+          }
+          $remoteRef = $remoteRefJson | ConvertFrom-Json
+          $remoteSha = [string]$remoteRef.object.sha
+          $remoteType = [string]$remoteRef.object.type
+          if ($remoteType -eq 'tag') {
+            $tagObjectPath = "repos/$env:RELEASE_REPOSITORY/git/tags/$remoteSha"
+            $tagObjectJson = (& gh api $tagObjectPath | Out-String)
+            $tagObjectExitCode = $LASTEXITCODE
+            if ($tagObjectExitCode -ne 0) {
+              throw "GitHub API annotated-tag lookup failed with exit code $tagObjectExitCode"
+            }
+            $tagObject = $tagObjectJson | ConvertFrom-Json
+            $remoteSha = [string]$tagObject.object.sha
+            $remoteType = [string]$tagObject.object.type
+          }
+          if ($remoteType -ne 'commit' -or [string]::IsNullOrWhiteSpace($remoteSha)) {
+            throw "GitHub API tag does not resolve to a commit: type=$remoteType sha=$remoteSha"
+          }
+          if ($remoteSha.Trim().ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Remote tag $env:GITHUB_REF_NAME resolves to $remoteSha, expected github.sha $env:EXPECTED_SHA"
+          }
+          $tagRef = "refs/tags/$($env:GITHUB_REF_NAME)"
+          $localSha = (& git rev-parse --verify "${tagRef}^{commit}" 2>$null | Out-String).Trim()
+          $localExitCode = $LASTEXITCODE
+          if ($localExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($localSha)) {
+            throw "Unable to resolve local $tagRef as a commit"
+          }
+          if ($localSha.ToLowerInvariant() -ne $env:EXPECTED_SHA.Trim().ToLowerInvariant()) {
+            throw "Local $tagRef resolves to $localSha, expected github.sha $env:EXPECTED_SHA"
+          }
+
+          $arguments = @('release', 'create', $env:GITHUB_REF_NAME, '--verify-tag', '--target', $env:EXPECTED_SHA)
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $arguments += '--prerelease' }
+          $arguments += @('--title', "ADHD One $env:GITHUB_REF_NAME", '--notes-file', 'RELEASE_NOTES.md')
+          $arguments += $assets
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed with exit code $LASTEXITCODE"
+          }

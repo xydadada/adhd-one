@@ -22,9 +22,14 @@ export async function pruneRuntime(runtimeRoot) {
 
 async function removeDevelopmentFiles(root) {
   const entries = await fs.readdir(root, { withFileTypes: true });
+  const removableDirectories = new Set(['.github', '.yarn', '__tests__', 'bench', 'benchmark', 'coverage', 'docs', 'examples', 'test', 'tests']);
+  const dependencyBoundary = path.basename(root) === 'node_modules';
   await Promise.all(entries.map(entry => {
     const target = path.join(root, entry.name);
-    if (entry.isDirectory()) return removeDevelopmentFiles(target);
+    if (entry.isDirectory()) {
+      if (!dependencyBoundary && removableDirectories.has(entry.name)) return fs.rm(target, { recursive: true, force: true });
+      return removeDevelopmentFiles(target);
+    }
     if (entry.isFile() && (entry.name.endsWith('.map') || entry.name.endsWith('.pdb') || /\.d\.(?:ts|mts|cts)$/u.test(entry.name))) return fs.rm(target, { force: true });
     return undefined;
   }));

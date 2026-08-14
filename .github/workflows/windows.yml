@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -14,21 +18,102 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.18.0
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            runtime/package-lock.json
       - run: npm ci --ignore-scripts
       - run: npm ci --ignore-scripts --prefix runtime
       - run: npm run audit:signatures
       - run: npm run check
-      - run: npm run build:setup
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Generate and check physical license closure
+        run: npm run license:closure:gate
+      - run: npm run build:win
+      - name: Verify packaged license closure carrier
+        run: node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked
+      - run: npm run verify:fuses -- "dist/win-unpacked/ADHD One.exe"
+      - name: Verify package version and Windows assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          $version = [string]$package.version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw 'package.json has no version'
+          }
+
+          $dist = Join-Path $PWD 'dist'
+          $required = @(
+            "ADHD-One-Setup-$version-x64.exe",
+            "ADHD-One-Portable-$version-win-x64.zip",
+            'latest.yml'
+          )
+          foreach ($name in $required) {
+            $path = Join-Path $dist $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing expected Windows artifact: $name"
+            }
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Empty Windows artifact: $name"
+            }
+          }
+          $setup = Get-Item -LiteralPath (Join-Path $dist "ADHD-One-Setup-$version-x64.exe")
+          if ($setup.Length -gt 145MB) {
+            throw "Setup exceeds the 145 MiB budget: $([math]::Round($setup.Length / 1MB, 2)) MiB"
+          }
+
+          $latest = Get-Content -Raw (Join-Path $dist 'latest.yml')
+          $versionPattern = '(?m)^version:\s*' + [regex]::Escape($version) + '\s*$'
+          if ($latest -notmatch $versionPattern) {
+            throw "latest.yml version does not match package.json ($version)"
+          }
+      - name: Packaged win-unpacked launch smoke
+        shell: pwsh
+        run: >-
+          node scripts/e2e/packaged.mjs
+          --exe "dist/win-unpacked/ADHD One.exe"
+          --output evidence/win-unpacked-launch.json
+          --scenario launch
+          --cycles 1
+      - name: NSIS installed E2E suite and uninstall residue check
+        shell: pwsh
+        run: |
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          ./scripts/e2e/installed.ps1 `
+            -SetupPath "dist/ADHD-One-Setup-$($package.version)-x64.exe" `
+            -EvidenceDirectory evidence/installed
+      - name: Portable ZIP launch E2E
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content -Raw package.json | ConvertFrom-Json
+          $zip = Join-Path $PWD "dist/ADHD-One-Portable-$($package.version)-win-x64.zip"
+          $portableRoot = Join-Path $env:RUNNER_TEMP "adhd-one-portable-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $portableRoot | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath $portableRoot
+          $executables = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File -Filter 'ADHD One.exe')
+          if ($executables.Count -ne 1) {
+            throw "Expected exactly one portable ADHD One.exe, found $($executables.Count)"
+          }
+          node scripts/e2e/packaged.mjs `
+            --exe $executables[0].FullName `
+            --output evidence/portable-launch.json `
+            --scenario launch `
+            --cycles 1
+          if ($LASTEXITCODE -ne 0) { throw "Portable launch E2E failed with exit code $LASTEXITCODE" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
         with:
           name: ADHD-One-Windows-x64
           path: |
             dist/ADHD-One-Setup-*-x64.exe
-            dist/ADHD-One-*-x64.zip
-            dist/*.yml
-          if-no-files-found: error
+            dist/ADHD-One-Portable-*-win-x64.zip
+            dist/latest.yml
+            evidence/**/*.json
+          if-no-files-found: warn

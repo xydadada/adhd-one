@@ -5,36 +5,86 @@ export const PROJECT_URL = 'https://github.com/xydadada/adhd-one';
 
 export type RuntimeState = 'idle' | 'preparing' | 'starting' | 'ready' | 'stopping' | 'updating' | 'failed';
 export type RuntimeSlot = 'bundled' | 'A' | 'B';
+export type RuntimeHealth = 'unknown' | 'healthy' | 'unhealthy';
+export type SnapshotError = { code: string; message: string };
 
-export interface RuntimeSnapshot {
+/** Canonical runtime status contract for the v0.2 public surface. */
+export interface RuntimeSnapshotV2 {
   state: RuntimeState;
   generation: number;
   runtimeVersion: string;
-  runtimeSlot: RuntimeSlot;
+  slot: RuntimeSlot;
+  health: RuntimeHealth;
   pid?: number | undefined;
   url?: string | undefined;
-  error?: { code: string; message: string } | undefined;
+  restartAttempt: number;
+  error?: SnapshotError | undefined;
 }
 
+/** Current runtime surface; RuntimeSnapshotV2 is the only public runtime shape. */
+export type RuntimeSnapshot = RuntimeSnapshotV2;
+
 export type UpdateTarget = 'app' | 'runtime';
-export type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'verified' | 'installing' | 'failed';
-export interface UpdateSnapshot {
+export type UpdateChannel = 'stable' | 'preview';
+export type UpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'verified' | 'installing' | 'failed';
+export type UpdateState = UpdatePhase;
+
+/** Canonical update status contract for app and Runtime updates. */
+export interface UpdateSnapshotV2 {
   target: UpdateTarget;
-  state: UpdateState;
-  version?: string;
-  progress?: number;
-  error?: { code: string; message: string } | undefined;
+  channel: UpdateChannel;
+  phase: UpdatePhase;
+  currentVersion: string;
+  candidateVersion?: string | undefined;
+  receivedBytes?: number | undefined;
+  totalBytes?: number | undefined;
+  canConfirm: boolean;
+  canInstall: boolean;
+  rollback: boolean;
+  error?: SnapshotError | undefined;
 }
+
+/** Compatibility name for the canonical update status contract. */
+export type UpdateSnapshot = UpdateSnapshotV2;
 
 export interface DoctorCheck {
   id: string;
   status: 'pass' | 'warning' | 'fail' | 'skipped';
   code?: string;
   summary: string;
-  durationMs?: number;
+  durationMs: number;
   details?: Record<string, unknown>;
 }
 
+export type DoctorCheckV2 = DoctorCheck;
+
+export interface DoctorEvidenceV2 {
+  toolCall: boolean;
+  toolResult: boolean;
+  argumentsParsed: boolean;
+  fileVerified: boolean;
+  secondTurnConsumed: boolean;
+  finalNonce: boolean;
+}
+
+/** Canonical Provider Doctor report contract. Values are safe to copy/share. */
+export interface DoctorReportV2 {
+  schemaVersion: 2;
+  generatedAt: string;
+  appVersion: string;
+  runtimeVersion: string;
+  platform: string;
+  mode: 'quick' | 'deep';
+  checks: DoctorCheckV2[];
+  durationMs: number;
+  provider?: string | undefined;
+  model?: string | undefined;
+  endpoint?: string | undefined;
+  requestId: string;
+  evidence: DoctorEvidenceV2;
+}
+
+/** Compatibility projection retained for the pre-V2 Provider Doctor report. */
 export interface DoctorReport {
   schemaVersion: 1;
   generatedAt: string;
@@ -55,10 +105,14 @@ export interface AppSnapshot {
   appVersion: string;
   runtime: RuntimeSnapshot;
   workspace?: string | undefined;
-  paths: { data: string; logs: string; dshHome: string };
 }
 
-export interface AppSettings {
+export interface SettingsMigration {
+  v1Imported: boolean;
+  legacyDshPrompted: boolean;
+}
+
+export interface AppSettingsV2 {
   schemaVersion: 2;
   locale: 'zh-CN' | 'en-US';
   workspace?: string | undefined;
@@ -66,8 +120,23 @@ export interface AppSettings {
   appChannel: 'stable' | 'preview';
   runtimeChannel: 'stable' | 'preview';
   closeToTrayExplained: boolean;
-  migration: { v1Imported: boolean; legacyDshPrompted: boolean };
+  migration: SettingsMigration;
 }
+
+export interface AppSettingsV3 {
+  schemaVersion: 3;
+  locale: 'zh-CN' | 'en-US';
+  workspace?: string | undefined;
+  preferredPort: number;
+  appChannel: 'stable' | 'preview';
+  runtimeChannel: 'stable' | 'preview';
+  closeToTrayExplained: boolean;
+  portableDataPath?: string | undefined;
+  migration: SettingsMigration;
+}
+
+/** Current settings surface; AppSettingsV2 remains available for migration callers. */
+export type AppSettings = AppSettingsV3;
 
 export interface RuntimeManifestV1 {
   schemaVersion: 1;

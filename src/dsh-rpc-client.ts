@@ -1,8 +1,15 @@
-/** Minimal RPC carrier adapted from @deepseek-ai/dsh-client-connection (MIT), commit 47f943859b. */
+/** Minimal RPC carrier adapted from @deepseek-ai/dsh-client-connection (MIT), DeepSeek Harness commit 47f943859b (upstream 0.1.0-rc.5); adapted-code source only, not an npm provenance record. */
 import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
 import { z } from 'zod';
-import { parseLoopbackRuntimeUrl } from './security.js';
+import { parseLoopbackRuntimeUrl, redactText } from './security.js';
+
+const REMOTE_ERROR_CODES = new Set([
+  'RPC_FAILED',
+  'MISSING_CREDENTIAL', 'AUTH', 'QUOTA', 'RATE_LIMIT', 'MODEL_UNAVAILABLE', 'TRANSPORT', 'TIMEOUT',
+  'STREAM_CLOSED', 'MALFORMED_RESPONSE', 'TOOL_ARGUMENT_INVALID', 'TOOL_ESCALATION_REQUIRED',
+  'REASONING_UNSUPPORTED', 'DSH_PROTOCOL_INCOMPATIBLE'
+]);
 
 const envelopeSchema = z.object({
   type: z.string().optional(),
@@ -10,12 +17,63 @@ const envelopeSchema = z.object({
   result: z.object({
     ok: z.boolean(),
     value: z.unknown().optional(),
-    error: z.object({ code: z.string(), message: z.string(), details: z.unknown().optional() }).optional()
+    error: z.object({ code: z.unknown().optional() }).optional()
   })
 });
 
+function normalizeRemoteCode(code: unknown): string {
+  return typeof code === 'string' && REMOTE_ERROR_CODES.has(code) ? code : 'RPC_FAILED';
+}
+
 export class DshRpcError extends Error {
-  constructor(readonly code: string, message: string, readonly details?: unknown) { super(message); }
+  constructor(readonly code: string, message: string) { super(redactText(message)); }
+
+  static fromRemote(code: unknown): DshRpcError {
+    const stableCode = normalizeRemoteCode(code);
+    const message = stableCode === 'RPC_FAILED' ? 'RPC request failed.' : `RPC request failed (${stableCode}).`;
+    return new DshRpcError(stableCode, message);
+  }
+
+  toJSON(): { code: string } {
+    return { code: this.code };
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function requestSignal(timeoutMs: number, external?: AbortSignal): { signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new DOMException('The request timed out.', 'TimeoutError')), timeoutMs);
+  const onAbort = () => controller.abort(external ? abortReason(external) : new DOMException('The operation was aborted.', 'AbortError'));
+  if (external) {
+    if (external.aborted) onAbort();
+    else external.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      external?.removeEventListener('abort', onAbort);
+    }
+  };
+}
+
+async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      value => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      error => { signal.removeEventListener('abort', onAbort); reject(error); }
+    );
+  });
 }
 
 export class DshRpcClient {
@@ -26,47 +84,121 @@ export class DshRpcClient {
     this.origin = parsed.origin;
   }
 
-  async call<T = unknown>(method: string, payload: unknown, timeoutMs = 10_000): Promise<T> {
+  async call<T = unknown>(method: string, payload: unknown, timeoutMs = 10_000, externalSignal?: AbortSignal): Promise<T> {
     if (!/^[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)+$/u.test(method)) throw new Error('INVALID_RPC_METHOD');
     const rpcId = randomBytes(12).toString('hex');
-    const response = await fetch(`${this.origin}/api/${method}`, {
-      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!response.ok) throw new DshRpcError(`HTTP_${response.status}`, `RPC ${method} returned HTTP ${response.status}`);
-    const envelope = envelopeSchema.parse(await response.json());
-    if (envelope.rpcId !== rpcId) throw new DshRpcError('RPC_ID_MISMATCH', `RPC ${method} returned the wrong rpcId`);
-    if (!envelope.result.ok) throw new DshRpcError(envelope.result.error?.code ?? 'RPC_FAILED', envelope.result.error?.message ?? `${method} failed`, envelope.result.error?.details);
-    return envelope.result.value as T;
+    const request = requestSignal(timeoutMs, externalSignal);
+    try {
+      const response = await abortable(fetch(`${this.origin}/api/${method}`, {
+        method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
+        signal: request.signal
+      }), request.signal);
+      if (!response.ok) throw new DshRpcError(`HTTP_${response.status}`, `RPC ${method} returned HTTP ${response.status}`);
+      let raw: unknown;
+      try { raw = await abortable(response.json(), request.signal); }
+      catch (error) {
+        if (request.signal.aborted) throw error;
+        throw new DshRpcError('MALFORMED_RESPONSE', `RPC ${method} returned malformed JSON`);
+      }
+      let envelope: z.infer<typeof envelopeSchema>;
+      try { envelope = envelopeSchema.parse(raw); }
+      catch { throw new DshRpcError('MALFORMED_RESPONSE', `RPC ${method} returned an invalid envelope`); }
+      if (envelope.rpcId !== rpcId) throw new DshRpcError('RPC_ID_MISMATCH', `RPC ${method} returned the wrong rpcId`);
+      if (!envelope.result.ok) throw DshRpcError.fromRemote(envelope.result.error?.code);
+      return envelope.result.value as T;
+    } finally {
+      request.dispose();
+    }
   }
 
-  openMux(onEnvelope: (envelope: { rpcId: string; payload: Record<string, unknown> }) => void): { close(): void; opened: Promise<void> } {
+  openMux(
+    onEnvelope: (envelope: { rpcId: string; payload: Record<string, unknown> }) => void,
+    externalSignal?: AbortSignal,
+    onProtocolError?: (error: DshRpcError) => void
+  ): { close(): void; opened: Promise<void> } {
     const url = new URL('/api/events.mux', this.origin);
     url.protocol = 'ws:';
+    if (externalSignal?.aborted) return { close: () => undefined, opened: Promise.reject(abortReason(externalSignal)) };
+
     const socket = new WebSocket(url);
-    const opened = new Promise<void>((resolve, reject) => {
-      socket.once('open', resolve);
-      socket.once('error', reject);
-    });
+    let openSettled = false;
+    let closed = false;
+    let resolveOpened!: () => void;
+    let rejectOpened!: (reason?: unknown) => void;
+    const opened = new Promise<void>((resolve, reject) => { resolveOpened = resolve; rejectOpened = reject; });
+    const finishOpen = (error?: unknown) => {
+      if (openSettled) return;
+      openSettled = true;
+      if (error === undefined) resolveOpened(); else rejectOpened(error);
+    };
+    const terminate = (reason?: unknown) => {
+      if (reason !== undefined) finishOpen(reason);
+      if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.terminate();
+      else if (socket.readyState === WebSocket.CLOSING) return;
+      else socket.close();
+    };
+    const onAbort = () => terminate(abortReason(externalSignal!));
+    const onOpen = () => finishOpen();
+    const onError = (error: unknown) => { if (!openSettled) finishOpen(error); };
+    const onClose = () => {
+      if (!openSettled) finishOpen(new Error('MUX_CLOSED_BEFORE_OPEN'));
+      socket.removeListener('error', onError);
+      socket.removeListener('close', onClose);
+    };
+    socket.once('open', onOpen);
+    socket.on('error', onError);
+    socket.once('close', onClose);
+    externalSignal?.addEventListener('abort', onAbort, { once: true });
     socket.on('message', data => {
-      if (typeof data !== 'string' && !Buffer.isBuffer(data)) return;
+      if (typeof data !== 'string' && !Buffer.isBuffer(data)) {
+        onProtocolError?.(new DshRpcError('MALFORMED_RESPONSE', 'Mux returned an unsupported frame type'));
+        return;
+      }
       try {
-        const value = JSON.parse(data.toString()) as { rpcId?: unknown; payload?: unknown };
-        if (typeof value.rpcId === 'string' && value.payload && typeof value.payload === 'object') {
-          onEnvelope({ rpcId: value.rpcId, payload: value.payload as Record<string, unknown> });
+        const value = JSON.parse(data.toString()) as { type?: unknown; rpcId?: unknown; method?: unknown; payload?: unknown };
+        const payload = value.payload && typeof value.payload === 'object' && !Array.isArray(value.payload)
+          ? value.payload as Record<string, unknown>
+          : undefined;
+        if (value.type !== 'server-request' || typeof value.rpcId !== 'string' || typeof value.method !== 'string'
+          || !payload || typeof payload.type !== 'string' || value.method !== payload.type) {
+          onProtocolError?.(new DshRpcError('MALFORMED_RESPONSE', 'Mux returned an invalid envelope'));
+          return;
         }
-      } catch {}
+        try { onEnvelope({ rpcId: value.rpcId, payload }); }
+        catch { onProtocolError?.(new DshRpcError('MALFORMED_RESPONSE', 'Mux envelope handler rejected a frame')); }
+      } catch {
+        onProtocolError?.(new DshRpcError('MALFORMED_RESPONSE', 'Mux returned malformed JSON'));
+      }
     });
-    return { opened, close: () => socket.close() };
+    if (externalSignal?.aborted) onAbort();
+    return {
+      opened,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        externalSignal?.removeEventListener('abort', onAbort);
+        socket.removeListener('open', onOpen);
+        terminate(openSettled ? undefined : new Error('MUX_CLOSED_BEFORE_OPEN'));
+        if (socket.readyState === WebSocket.CLOSED) {
+          socket.removeListener('error', onError);
+          socket.removeListener('close', onClose);
+        }
+      }
+    };
   }
 
-  async respond(rpcId: string, value: unknown): Promise<void> {
-    const response = await fetch(`${this.origin}/api/respond`, {
-      method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-response', rpcId, result: { ok: true, value } }),
-      signal: AbortSignal.timeout(5_000)
-    });
-    if (!response.ok) throw new DshRpcError(`HTTP_${response.status}`, `respond returned HTTP ${response.status}`);
+  async respond(rpcId: string, value: unknown, externalSignal?: AbortSignal): Promise<void> {
+    const request = requestSignal(5_000, externalSignal);
+    try {
+      const response = await abortable(fetch(`${this.origin}/api/respond`, {
+        method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-response', rpcId, result: { ok: true, value } }),
+        signal: request.signal
+      }), request.signal);
+      if (!response.ok) throw new DshRpcError(`HTTP_${response.status}`, `respond returned HTTP ${response.status}`);
+    } finally {
+      request.dispose();
+    }
   }
 }

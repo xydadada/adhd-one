@@ -1,16 +1,35 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { constants as fsConstants, createReadStream } from 'node:fs';
+import { copyFile, mkdir, open, readFile, rm, stat } from 'node:fs/promises';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import updaterPackage from 'electron-updater';
 import { verify, type Bundle } from 'sigstore';
 import { z } from 'zod';
-import { validateArchiveEntry } from './security.js';
-import { writeFileAtomic } from './settings-store.js';
-import type { RuntimeManifestV1, UpdateSnapshot, UpdateTarget } from './types.js';
+import semver from 'semver';
+import { NtExecutable } from 'pe-library';
+import { parseSevenZipSlt, scanExtractedTreeNoReparse } from './archive-inspection.js';
+import { preflightRuntimeClosure } from './runtime-closure-inspector.js';
+import { runRuntimeStagingSmoke } from './runtime-staging-smoke.js';
+import { assertNoWindowsReparseComponents } from './windows-platform.js';
+import type { RuntimeManifestV1, UpdateChannel, UpdateSnapshotV2, UpdateTarget } from './types.js';
+import { DSH_VERSION } from './types.js';
+import {
+  createRuntimeCommitJournal,
+  createRuntimeCommitTxid,
+  parseRuntimeCommitJournal,
+  recoverRuntimeCommit,
+  writeRuntimeCommitJournal,
+  type RuntimeCommitState
+} from './runtime-commit-journal.js';
 
 const updater = () => updaterPackage.autoUpdater;
+const execFileAsync = promisify(execFile);
 
 const manifestSchema = z.object({
   schemaVersion: z.literal(1), channel: z.enum(['stable', 'preview']), generatedAt: z.iso.datetime(),
@@ -21,14 +40,134 @@ const manifestSchema = z.object({
   attestation: z.object({ repository: z.literal('xydadada/adhd-one'), workflow: z.string(), ref: z.string(), subjectDigest: z.string() }), notesUrl: z.string().optional()
 });
 
-export function parseRuntimeManifest(value: unknown, channel: 'stable' | 'preview'): RuntimeManifestV1 {
+const githubDownloadHosts = new Set(['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']);
+const runtimeProgressByteThreshold = 256 * 1024;
+const runtimeProgressTimeThresholdMs = 100;
+
+export function runtimeValidationEnvironment(nodePath: string, home: string): NodeJS.ProcessEnv {
+  const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows';
+  const environment: NodeJS.ProcessEnv = {
+    SystemRoot: systemRoot,
+    windir: systemRoot,
+    ComSpec: process.env.ComSpec ?? path.win32.join(systemRoot, 'System32', 'cmd.exe'),
+    SystemDrive: process.env.SystemDrive ?? path.win32.parse(systemRoot).root.replace(/[\\/]$/u, ''),
+    TEMP: process.env.TEMP ?? path.win32.join(systemRoot, 'Temp'),
+    TMP: process.env.TMP ?? process.env.TEMP ?? path.win32.join(systemRoot, 'Temp'),
+    PATHEXT: process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+    PROCESSOR_ARCHITECTURE: process.env.PROCESSOR_ARCHITECTURE ?? 'AMD64',
+    PATH: [path.win32.dirname(nodePath), path.win32.join(systemRoot, 'System32')].join(';'),
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: path.join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    DSH_HOME: home,
+    DSH_TELEMETRY_DISABLED: '1',
+    NO_COLOR: '1'
+  };
+  return environment;
+}
+
+const runtimeStateSchema = z.object({
+  active: z.enum(['A', 'B', 'bundled']).optional(),
+  previous: z.enum(['A', 'B', 'bundled']).optional(),
+  version: z.string().optional(),
+  healthy: z.boolean().optional()
+}).passthrough();
+
+const runtimeStateFileName = 'runtime-state.json';
+const runtimeCommitJournalFileName = '.runtime-commit-journal.json';
+
+function trustedGithubUrl(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || !githubDownloadHosts.has(url.hostname)) throw new Error('UNTRUSTED_GITHUB_URL');
+  return url;
+}
+
+async function fetchGithub(url: string, signal: AbortSignal): Promise<Response> {
+  let current = trustedGithubUrl(url);
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    const response = await fetch(current, { redirect: 'manual', signal });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get('location');
+    if (!location) throw new Error('GITHUB_REDIRECT_MISSING');
+    current = trustedGithubUrl(new URL(location, current).href);
+  }
+  throw new Error('GITHUB_REDIRECT_LIMIT');
+}
+
+async function readJsonBounded(response: Response, limit: number): Promise<unknown> {
+  if (!response.body) throw new Error('RESPONSE_BODY_MISSING');
+  const chunks: Buffer[] = []; let size = 0;
+  for await (const value of response.body) {
+    const chunk = Buffer.from(value); size += chunk.length;
+    if (size > limit) throw new Error('MANIFEST_TOO_LARGE');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+}
+
+const releaseListSchema = z.array(z.object({
+  draft: z.boolean(), prerelease: z.boolean(), tag_name: z.string(),
+  assets: z.array(z.object({ name: z.string(), browser_download_url: z.string() }))
+}));
+
+async function resolveRuntimeManifestUrl(source: string, channel: 'stable' | 'preview'): Promise<string | undefined> {
+  const url = new URL(source);
+  if (url.hostname !== 'api.github.com') return source;
+  if (url.protocol !== 'https:' || url.pathname !== '/repos/xydadada/adhd-one/releases') throw new Error('UNTRUSTED_RELEASES_API');
+  const response = await fetch(url, { redirect: 'error', headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`RELEASES_HTTP_${response.status}`);
+  const releases = releaseListSchema.parse(await readJsonBounded(response, 2 * 1024 * 1024))
+    .filter(release => !release.draft && (channel === 'preview' || !release.prerelease))
+    .filter(release => {
+      const version = semver.valid(release.tag_name.replace(/^v/u, ''));
+      return Boolean(version && (channel === 'preview' || !semver.prerelease(version)));
+    })
+    .sort((left, right) => semver.rcompare(left.tag_name.replace(/^v/u, ''), right.tag_name.replace(/^v/u, '')));
+  const asset = releases[0]?.assets.find(value => value.name === 'runtime-manifest.json');
+  return asset?.browser_download_url;
+}
+
+export function parseRuntimeManifest(value: unknown, channel: 'stable' | 'preview', appVersion?: string): RuntimeManifestV1 {
   const parsed = manifestSchema.parse(value) as RuntimeManifestV1;
   if (parsed.channel !== channel) throw new Error('RUNTIME_CHANNEL_MISMATCH');
-  if (channel === 'stable' && /(?:alpha|beta|rc)/iu.test(parsed.runtime.version)) throw new Error('PRERELEASE_ON_STABLE');
-  const url = new URL(parsed.asset.url);
-  if (url.protocol !== 'https:' || !['github.com', 'objects.githubusercontent.com'].includes(url.hostname)) throw new Error('UNTRUSTED_RUNTIME_ASSET');
+  if (!semver.valid(parsed.runtime.version) || !semver.valid(parsed.minAppVersion)) throw new Error('INVALID_RUNTIME_SEMVER');
+  if (channel === 'stable' && semver.prerelease(parsed.runtime.version)) throw new Error('PRERELEASE_ON_STABLE');
+  if (appVersion && (!semver.valid(appVersion) || semver.lt(appVersion, parsed.minAppVersion))) throw new Error('APP_VERSION_TOO_OLD');
+  try { trustedGithubUrl(parsed.asset.url); } catch { throw new Error('UNTRUSTED_RUNTIME_ASSET'); }
   if (parsed.attestation.subjectDigest !== `sha256:${parsed.asset.sha256}`) throw new Error('ATTESTATION_DIGEST_MISMATCH');
+  if (parsed.attestation.workflow !== '.github/workflows/release.yml' || !/^refs\/tags\/v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(parsed.attestation.ref)) throw new Error('ATTESTATION_IDENTITY_INVALID');
+  const tag = parsed.attestation.ref.replace(/^refs\/tags\//u, '');
+  const assetUrl = new URL(parsed.asset.url);
+  if (!/^[A-Za-z0-9._-]+$/u.test(parsed.asset.name)
+    || decodeURIComponent(assetUrl.pathname) !== `/xydadada/adhd-one/releases/download/${tag}/${parsed.asset.name}`) throw new Error('RUNTIME_RELEASE_IDENTITY_MISMATCH');
   return parsed;
+}
+
+export function isRuntimeUpgrade(candidate: string, current: string): boolean {
+  return Boolean(semver.valid(candidate) && semver.valid(current) && semver.gt(candidate, current));
+}
+
+export function selectRuntimeInstallSlots(current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean }): { slot: 'A' | 'B'; previous: 'A' | 'B' | 'bundled' } {
+  const activeSlot = current.active === 'A' || current.active === 'B' ? current.active : undefined;
+  const slot: 'A' | 'B' = activeSlot && current.healthy === false ? activeSlot : activeSlot === 'A' ? 'B' : 'A';
+  const previous = current.active === 'bundled' ? 'bundled'
+    : activeSlot && current.healthy === true ? activeSlot : current.previous ?? 'bundled';
+  return { slot, previous };
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+async function pathExists(filename: string): Promise<boolean> {
+  try {
+    await stat(filename);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
 }
 
 async function sha256(filename: string): Promise<string> {
@@ -37,77 +176,345 @@ async function sha256(filename: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function verifyGithubAttestation(filename: string, digest: string, tag: string): Promise<void> {
+async function verifyGithubAttestation(digest: string, tag: string, assetName: string): Promise<void> {
+  if (!/^[0-9a-f]{64}$/u.test(digest) || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(tag)
+    || !/^[A-Za-z0-9._-]+$/u.test(assetName)) throw new Error('ATTESTATION_INPUT_INVALID');
+  const issuer = 'https://token.actions.githubusercontent.com';
+  const identity = `https://github.com/xydadada/adhd-one/.github/workflows/release.yml@refs/tags/${tag}`;
   const response = await fetch(`https://api.github.com/repos/xydadada/adhd-one/attestations/sha256:${digest}`, {
     headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) throw new Error(`ATTESTATION_HTTP_${response.status}`);
   const body = await response.json() as { attestations?: Array<{ bundle?: Bundle }> };
-  const bundle = body.attestations?.[0]?.bundle;
-  if (!bundle) throw new Error('ATTESTATION_NOT_FOUND');
-  await verify(bundle, await readFile(filename), {
-    certificateIssuer: 'https://token.actions.githubusercontent.com',
-    certificateIdentityURI: `https://github.com/xydadada/adhd-one/.github/workflows/release.yml@refs/tags/${tag}`
-  });
+  const escapedIdentity = identity.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  for (const entry of body.attestations ?? []) {
+    const bundle = entry.bundle;
+    if (!bundle?.dsseEnvelope?.payload || bundle.dsseEnvelope.payloadType !== 'application/vnd.in-toto+json') continue;
+    try {
+      const signer = await verify(bundle, {
+        ctLogThreshold: 1,
+        tlogThreshold: 1,
+        certificateIssuer: issuer,
+        certificateIdentityURI: `^${escapedIdentity}$`
+      });
+      if (signer.identity?.extensions?.issuer !== issuer || signer.identity.subjectAlternativeName !== identity) continue;
+      const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, 'base64').toString('utf8')) as {
+        _type?: unknown;
+        subject?: Array<{ name?: unknown; digest?: { sha256?: unknown } } | null>;
+      };
+      if (statement._type === 'https://in-toto.io/Statement/v1'
+        && Array.isArray(statement.subject)
+        && statement.subject.some(subject => subject?.digest?.sha256 === digest && typeof subject.name === 'string'
+          && (subject.name === assetName || subject.name.replace(/\\/gu, '/').endsWith(`/${assetName}`)))) return;
+    } catch { continue; }
+  }
+  throw new Error('ATTESTATION_NOT_FOUND');
 }
 
-interface UpdatePaths { staging: string; runtimes: string; sevenZip: string }
+interface UpdatePaths {
+  staging: string;
+  runtimes: string;
+  sevenZip: string;
+  appPath?: string;
+  resourcesPath?: string;
+  packaged?: boolean;
+}
 
 export class UpdateManager extends EventEmitter {
-  private snapshots = new Map<UpdateTarget, UpdateSnapshot>([['app', { target: 'app', state: 'idle' }], ['runtime', { target: 'runtime', state: 'idle' }]]);
-  private manifest?: RuntimeManifestV1;
-  constructor(private readonly paths: UpdatePaths, private readonly appVersion: string, private readonly manifestUrl: string) {
-    super(); updater().autoDownload = false; updater().allowPrerelease = false;
+  private snapshots: Map<UpdateTarget, UpdateSnapshotV2>;
+  private appCandidate?: { version: string; tag: string; assetName: string; generation: number };
+  private runtimeCandidate?: { manifest: RuntimeManifestV1; channel: 'stable' | 'preview'; generation: number };
+  private confirming = new Set<UpdateTarget>();
+  private checkGenerations = new Map<UpdateTarget, number>();
+  constructor(
+    private readonly paths: UpdatePaths,
+    private readonly appVersion: string,
+    private readonly manifestUrl: string,
+    private readonly portable = false
+  ) {
+    super();
+    this.snapshots = new Map<UpdateTarget, UpdateSnapshotV2>([
+      ['app', { target: 'app', channel: 'stable', phase: 'idle', currentVersion: appVersion, canConfirm: false, canInstall: false, rollback: false }],
+      ['runtime', { target: 'runtime', channel: 'stable', phase: 'idle', currentVersion: DSH_VERSION, canConfirm: false, canInstall: false, rollback: false }]
+    ]);
+    updater().autoDownload = false;
+    updater().autoInstallOnAppQuit = false;
+    updater().allowPrerelease = false;
   }
-  snapshot(target: UpdateTarget): UpdateSnapshot { return structuredClone(this.snapshots.get(target)!); }
-  private set(target: UpdateTarget, patch: Partial<UpdateSnapshot>): void {
-    const next = { ...this.snapshot(target), ...patch } as UpdateSnapshot; this.snapshots.set(target, next); this.emit('changed', next);
+  snapshot(target: UpdateTarget): UpdateSnapshotV2 { return structuredClone(this.snapshots.get(target)!); }
+  private set(target: UpdateTarget, patch: Partial<Omit<UpdateSnapshotV2, 'target' | 'canConfirm' | 'canInstall'>>): void {
+    const next = { ...this.snapshot(target), ...patch } as UpdateSnapshotV2;
+    for (const key of ['candidateVersion', 'receivedBytes', 'totalBytes', 'error'] as const) if (key in patch && patch[key] === undefined) delete next[key];
+    next.canConfirm = next.phase === 'available';
+    next.canInstall = target === 'app' && !this.portable && next.phase === 'verified';
+    if (patch.rollback !== undefined) next.rollback = patch.rollback;
+    this.snapshots.set(target, next); this.emit('changed', next);
   }
-  async check(target: UpdateTarget, channel: 'stable' | 'preview'): Promise<UpdateSnapshot> {
-    this.set(target, { state: 'checking', error: undefined });
+  private async recoverRuntimeCommitIfPresent(): Promise<void> {
+    const journalPath = path.join(this.paths.runtimes, runtimeCommitJournalFileName);
+    let serialized: string;
+    try {
+      serialized = await readFile(journalPath, 'utf8');
+    } catch (error) {
+      if (isMissingPathError(error)) return;
+      throw error;
+    }
+    const journal = parseRuntimeCommitJournal(JSON.parse(serialized) as unknown);
+    await recoverRuntimeCommit({
+      runtimeRoot: this.paths.runtimes,
+      stateFile: runtimeStateFileName,
+      journal,
+      journalFile: runtimeCommitJournalFileName
+    });
+  }
+  async check(target: UpdateTarget, channel: UpdateChannel): Promise<UpdateSnapshotV2> {
+    const generation = (this.checkGenerations.get(target) ?? 0) + 1;
+    this.checkGenerations.set(target, generation);
+    if (target === 'app') delete this.appCandidate;
+    if (target === 'runtime') delete this.runtimeCandidate;
+    this.set(target, {
+      channel,
+      phase: 'checking',
+      currentVersion: target === 'app' ? this.appVersion : this.snapshot(target).currentVersion,
+      candidateVersion: undefined,
+      receivedBytes: undefined,
+      totalBytes: undefined,
+      error: undefined,
+      rollback: false
+    });
     try {
       if (target === 'app') {
         updater().allowPrerelease = channel === 'preview';
         const result = await updater().checkForUpdates();
-        const version = result?.updateInfo.version;
-        this.set(target, version && version !== this.appVersion ? { state: 'available', version } : { state: 'idle' });
+        const updateInfo = result?.updateInfo as (NonNullable<typeof result>['updateInfo'] & { tag?: unknown }) | undefined;
+        const version = updateInfo?.version;
+        if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
+        if (version && semver.valid(version) && semver.gt(version, this.appVersion)) {
+          const assetName = `ADHD-One-Setup-${version}-x64.exe`;
+          const matchingFiles = updateInfo.files.filter(file => file.url === assetName);
+          if (updateInfo.tag !== `v${version}` || updateInfo.files.length !== 1 || matchingFiles.length !== 1) {
+            throw new Error('APP_UPDATE_METADATA_MISMATCH');
+          }
+          this.appCandidate = { version, tag: updateInfo.tag, assetName, generation };
+          this.set(target, { phase: 'available', candidateVersion: version });
+        } else this.set(target, { phase: 'idle' });
       } else {
-        const response = await fetch(this.manifestUrl, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+        const runtimeStatus = await this.currentRuntimeStatus();
+        if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
+        this.set(target, runtimeStatus);
+        const manifestUrl = await resolveRuntimeManifestUrl(this.manifestUrl, channel);
+        if (!manifestUrl) { this.set(target, { phase: 'idle' }); return this.snapshot(target); }
+        const response = await fetchGithub(manifestUrl, AbortSignal.timeout(10_000));
         if (!response.ok || Number(response.headers.get('content-length') ?? 0) > 1_048_576) throw new Error(`MANIFEST_HTTP_${response.status}`);
-        this.manifest = parseRuntimeManifest(await response.json(), channel);
-        this.set(target, { state: 'available', version: this.manifest.runtime.version });
+        const rawManifest = await readJsonBounded(response, 1_048_576);
+        const advertisedChannel = z.object({ channel: z.enum(['stable', 'preview']) }).parse(rawManifest).channel;
+        if (advertisedChannel !== channel) { this.set(target, { phase: 'idle' }); return this.snapshot(target); }
+        const manifest = parseRuntimeManifest(rawManifest, channel, this.appVersion);
+        const currentVersion = runtimeStatus.currentVersion;
+        if (!isRuntimeUpgrade(manifest.runtime.version, currentVersion)) { this.set(target, { phase: 'idle', candidateVersion: undefined }); return this.snapshot(target); }
+        this.runtimeCandidate = { manifest, channel, generation };
+        this.set(target, { phase: 'available', candidateVersion: manifest.runtime.version });
       }
-    } catch (error) { this.set(target, { state: 'failed', error: { code: 'UPDATE_CHECK_FAILED', message: error instanceof Error ? error.message : String(error) } }); }
+    } catch { if (this.checkGenerations.get(target) === generation) this.set(target, { phase: 'failed', error: { code: 'UPDATE_CHECK_FAILED', message: 'Update check failed.' } }); }
     return this.snapshot(target);
   }
   async confirm(target: UpdateTarget): Promise<void> {
+    if (this.confirming.has(target)) throw new Error('UPDATE_CONFIRM_IN_PROGRESS');
+    this.confirming.add(target);
+    let runtimePart: string | undefined;
+    try {
+    if (target === 'runtime') await this.recoverRuntimeCommitIfPresent();
+    if (this.snapshot(target).phase !== 'available') throw new Error('UPDATE_NOT_AVAILABLE');
     if (target === 'app') {
-      this.set(target, { state: 'downloading' });
+      if (this.portable) throw new Error('PORTABLE_UPDATE_DOWNLOAD_ONLY');
+      const candidate = this.appCandidate;
+      if (!candidate || candidate.generation !== this.checkGenerations.get('app')
+        || this.snapshot('app').candidateVersion !== candidate.version) throw new Error('APP_UPDATE_METADATA_MISSING');
+      this.set(target, { phase: 'downloading' });
       const result = await updater().downloadUpdate();
       const filename = result[0]; if (!filename) throw new Error('UPDATE_FILE_MISSING');
-      const digest = await sha256(filename); await verifyGithubAttestation(filename, digest, `v${this.snapshot('app').version ?? this.appVersion}`);
-      this.set(target, { state: 'verified' }); return;
+      if (path.basename(filename) !== candidate.assetName) throw new Error('UPDATE_ASSET_NAME_MISMATCH');
+      const assetName = path.basename(filename);
+      const digest = await sha256(filename);
+      await verifyGithubAttestation(digest, candidate.tag, assetName);
+      this.set(target, { phase: 'verified' }); return;
     }
-    if (!this.manifest) throw new Error('RUNTIME_MANIFEST_MISSING');
-    const manifest = this.manifest; await mkdir(this.paths.staging, { recursive: true });
+    const candidate = this.runtimeCandidate;
+    if (!candidate || candidate.generation !== this.checkGenerations.get('runtime') || this.snapshot('runtime').candidateVersion !== candidate.manifest.runtime.version) throw new Error('RUNTIME_MANIFEST_MISSING');
+    const manifest = candidate.manifest; await mkdir(this.paths.staging, { recursive: true });
     const part = path.join(this.paths.staging, `${manifest.asset.name}.part`); await rm(part, { force: true });
-    this.set(target, { state: 'downloading' });
-    const response = await fetch(manifest.asset.url, { redirect: 'follow', signal: AbortSignal.timeout(120_000) });
+    runtimePart = part;
+    this.set(target, { phase: 'downloading', receivedBytes: 0, totalBytes: manifest.asset.size });
+    const response = await fetchGithub(manifest.asset.url, AbortSignal.timeout(120_000));
     if (!response.ok || !response.body) throw new Error(`RUNTIME_DOWNLOAD_HTTP_${response.status}`);
-    const chunks: Uint8Array[] = []; let size = 0;
-    for await (const chunk of response.body) { size += chunk.length; if (size > manifest.asset.size) throw new Error('RUNTIME_ASSET_TOO_LARGE'); chunks.push(chunk); }
-    if (size !== manifest.asset.size) throw new Error('RUNTIME_SIZE_MISMATCH'); await writeFile(part, Buffer.concat(chunks));
-    if (await sha256(part) !== manifest.asset.sha256) throw new Error('RUNTIME_SHA256_MISMATCH');
-    await verifyGithubAttestation(part, manifest.asset.sha256, manifest.attestation.ref.replace(/^refs\/tags\//u, ''));
-    this.set(target, { state: 'verified' });
+    const digest = createHash('sha256'); let size = 0;
+    let lastReportedBytes = 0;
+    let lastReportedAt = Date.now();
+    const reportProgress = (receivedBytes: number, force = false): void => {
+      const now = Date.now();
+      if (!force && receivedBytes - lastReportedBytes < runtimeProgressByteThreshold && now - lastReportedAt < runtimeProgressTimeThresholdMs) return;
+      if (receivedBytes === lastReportedBytes) return;
+      this.set('runtime', { receivedBytes });
+      lastReportedBytes = receivedBytes;
+      lastReportedAt = now;
+    };
+    const handle = await open(part, 'wx');
+    try {
+      const meter = new Transform({ transform: (chunk: Buffer, _encoding, callback) => {
+        size += chunk.length;
+        if (size > manifest.asset.size) { callback(new Error('RUNTIME_ASSET_TOO_LARGE')); return; }
+        digest.update(chunk); reportProgress(size); callback(null, chunk);
+      } });
+      await pipeline(Readable.from(response.body as AsyncIterable<Uint8Array>), meter, handle.createWriteStream({ autoClose: false }));
+      await handle.sync();
+    } finally { await handle.close().catch(() => undefined); }
+    if (size <= manifest.asset.size) reportProgress(size, true);
+    if (size !== manifest.asset.size) throw new Error('RUNTIME_SIZE_MISMATCH');
+    if (digest.digest('hex') !== manifest.asset.sha256) throw new Error('RUNTIME_SHA256_MISMATCH');
+    await verifyGithubAttestation(manifest.asset.sha256, manifest.attestation.ref.replace(/^refs\/tags\//u, ''), manifest.asset.name);
+    this.set(target, { phase: 'installing' });
+    await this.installVerifiedRuntime(part, manifest);
+    await rm(part, { force: true }); runtimePart = undefined;
+    this.set(target, { phase: 'verified', rollback: true });
+    } catch (error) {
+      if (runtimePart) await rm(runtimePart, { force: true }).catch(() => undefined);
+      this.set(target, { phase: 'failed', error: { code: 'UPDATE_INSTALL_FAILED', message: 'Update verification or installation failed.' } });
+      throw error;
+    } finally {
+      this.confirming.delete(target);
+    }
   }
-  async activateStaged(slot: 'A' | 'B', entries: readonly string[]): Promise<void> {
-    for (const entry of entries) if (!validateArchiveEntry(entry)) throw new Error(`UNSAFE_ARCHIVE_ENTRY:${entry}`);
-    const source = path.join(this.paths.staging, this.manifest!.asset.name + '.part');
-    if (!(await stat(source)).isFile()) throw new Error('STAGED_RUNTIME_MISSING');
-    const stateFile = path.join(this.paths.runtimes, 'runtime-state.json');
+  private async installVerifiedRuntime(archive: string, manifest: RuntimeManifestV1): Promise<void> {
+    await this.recoverRuntimeCommitIfPresent();
     await mkdir(this.paths.runtimes, { recursive: true });
-    await writeFileAtomic(stateFile, JSON.stringify({ active: slot, previous: slot === 'A' ? 'B' : 'A', version: this.manifest!.runtime.version }) + '\n');
+    const stateFile = path.join(this.paths.runtimes, runtimeStateFileName);
+    let beforeState: RuntimeCommitState | null = null;
+    let current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean } = {};
+    try {
+      const parsed = JSON.parse(await readFile(stateFile, 'utf8')) as unknown;
+      const validated = z.object({
+        active: z.enum(['A', 'B', 'bundled']).optional(),
+        previous: z.enum(['A', 'B', 'bundled']).optional(),
+        healthy: z.boolean().optional()
+      }).passthrough().parse(parsed);
+      beforeState = validated as RuntimeCommitState;
+      current = {
+        ...(validated.active !== undefined ? { active: validated.active } : {}),
+        ...(validated.previous !== undefined ? { previous: validated.previous } : {}),
+        ...(validated.healthy !== undefined ? { healthy: validated.healthy } : {})
+      };
+    } catch (error) {
+      if (!isMissingPathError(error)) throw new Error('RUNTIME_STATE_INVALID', { cause: error });
+    }
+    const { slot, previous: previousHealthy } = selectRuntimeInstallSlots(current);
+    const destinationName = `slot-${slot}`;
+    const destination = path.join(this.paths.runtimes, destinationName);
+    const validationRoot = path.join(this.paths.runtimes, `.staging-${slot}-${randomBytes(8).toString('hex')}`);
+    const staging = path.join(validationRoot, `slot-${slot}`);
+    await mkdir(staging, { recursive: true });
+    const verifiedArchive = path.join(validationRoot, 'runtime.verified.7z');
+    let journalWritten = false;
+    try {
+      await copyFile(archive, verifiedArchive, fsConstants.COPYFILE_EXCL);
+      const assertVerifiedArchive = async (): Promise<void> => {
+        const archiveStats = await stat(verifiedArchive);
+        if (!archiveStats.isFile() || archiveStats.size !== manifest.asset.size) throw new Error('RUNTIME_VERIFIED_ARCHIVE_SIZE_MISMATCH');
+        if (await sha256(verifiedArchive) !== manifest.asset.sha256) throw new Error('RUNTIME_VERIFIED_ARCHIVE_SHA256_MISMATCH');
+      };
+      await assertVerifiedArchive();
+      const listing = await execFileAsync(this.paths.sevenZip, ['l', '-slt', '-sccUTF-8', verifiedArchive], {
+        windowsHide: true, timeout: 60_000, maxBuffer: 32 * 1024 * 1024, encoding: 'buffer'
+      });
+      const inspection = parseSevenZipSlt(listing.stdout, {
+        maxEntries: 50_000,
+        maxFileSize: 512 * 1024 * 1024,
+        maxTotalSize: 1024 * 1024 * 1024
+      });
+      await assertVerifiedArchive();
+      assertNoWindowsReparseComponents(staging);
+      await execFileAsync(this.paths.sevenZip, ['x', '-y', '-sccUTF-8', `-o${staging}`, verifiedArchive], { windowsHide: true, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+      await assertVerifiedArchive();
+      await scanExtractedTreeNoReparse(staging, inspection.entries);
+      await preflightRuntimeClosure({
+        activeRuntimeRoot: path.join(staging, 'dsh-runtime'),
+        slot,
+        scanMode: 'deep'
+      });
+      const nodePath = path.join(staging, 'node-runtime', 'node.exe');
+      const executable = NtExecutable.from(await readFile(nodePath), { ignoreCert: true });
+      if (executable.is32bit() || executable.newHeader.fileHeader.machine !== 0x8664) throw new Error('RUNTIME_NODE_NOT_X64');
+      const dshPackage = JSON.parse(await readFile(path.join(staging, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')) as { version?: string };
+      const runtimePackage = JSON.parse(await readFile(path.join(staging, 'dsh-runtime', 'package.json'), 'utf8')) as { dependencies?: Record<string, string> };
+      const runtimeLock = JSON.parse(await readFile(path.join(staging, 'dsh-runtime', 'package-lock.json'), 'utf8')) as { packages?: Record<string, { integrity?: string }> };
+      if (dshPackage.version !== manifest.runtime.version || runtimePackage.dependencies?.['@deepseek-ai/dsh'] !== manifest.runtime.version
+        || runtimePackage.dependencies?.pnpm !== manifest.runtime.pnpmVersion
+        || runtimeLock.packages?.['node_modules/@deepseek-ai/dsh']?.integrity !== manifest.runtime.dshIntegrity) throw new Error('RUNTIME_PACKAGE_MISMATCH');
+      const validationHome = path.join(validationRoot, 'version-home');
+      await mkdir(path.join(validationHome, 'AppData', 'Roaming'), { recursive: true });
+      await mkdir(path.join(validationHome, 'AppData', 'Local'), { recursive: true });
+      const validationEnvironment = runtimeValidationEnvironment(nodePath, validationHome);
+      const nodeVersion = (await execFileAsync(nodePath, ['--version'], {
+        windowsHide: true, timeout: 10_000, env: validationEnvironment
+      })).stdout.trim().replace(/^v/u, '');
+      if (nodeVersion !== manifest.runtime.nodeVersion) throw new Error('RUNTIME_NODE_VERSION_MISMATCH');
+      const dshEntry = path.join(staging, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+      const dshVersion = (await execFileAsync(nodePath, [dshEntry, '--version'], { windowsHide: true, timeout: 20_000,
+        env: validationEnvironment })).stdout;
+      if (!dshVersion.includes(manifest.runtime.version)) throw new Error('RUNTIME_DSH_VERSION_MISMATCH');
+      if (!this.paths.appPath || !this.paths.resourcesPath || typeof this.paths.packaged !== 'boolean') throw new Error('RUNTIME_SMOKE_PATHS_MISSING');
+      await runRuntimeStagingSmoke({
+        validationRoot, slot, version: manifest.runtime.version,
+        appPath: this.paths.appPath, resourcesPath: this.paths.resourcesPath, packaged: this.paths.packaged
+      });
+      assertNoWindowsReparseComponents(destination);
+      const destinationWasPresent = await pathExists(destination);
+      const txid = createRuntimeCommitTxid();
+      const afterState: RuntimeCommitState = {
+        schemaVersion: 1,
+        active: slot,
+        previous: previousHealthy,
+        version: manifest.runtime.version,
+        healthy: false
+      };
+      const journal = createRuntimeCommitJournal({
+        txid,
+        slot,
+        stagingRoot: path.relative(this.paths.runtimes, validationRoot),
+        staging: path.relative(this.paths.runtimes, staging),
+        destination: destinationName,
+        backup: `.rollback-${slot}-${txid}`,
+        beforeState,
+        afterState,
+        destinationWasPresent
+      });
+      const journalPath = path.join(this.paths.runtimes, runtimeCommitJournalFileName);
+      await writeRuntimeCommitJournal(journalPath, journal);
+      journalWritten = true;
+      await recoverRuntimeCommit({
+        runtimeRoot: this.paths.runtimes,
+        stateFile: runtimeStateFileName,
+        journal,
+        journalFile: runtimeCommitJournalFileName
+      });
+    } catch (error) {
+      if (!journalWritten) await rm(validationRoot, { recursive: true, force: true });
+      throw error;
+    }
   }
-  quitAndInstall(): void { updater().quitAndInstall(false, true); }
+  private async currentRuntimeStatus(): Promise<{ currentVersion: string; rollback: boolean }> {
+    await this.recoverRuntimeCommitIfPresent();
+    try {
+      const state = runtimeStateSchema.parse(JSON.parse(await readFile(path.join(this.paths.runtimes, runtimeStateFileName), 'utf8')));
+      const currentVersion = state.healthy === true && state.version && semver.valid(state.version) ? state.version : DSH_VERSION;
+      const previous = state.previous ?? 'bundled';
+      const rollback = (state.active === 'A' || state.active === 'B') && state.healthy === false
+        && Boolean(state.version && semver.valid(state.version)) && previous !== state.active;
+      return { currentVersion, rollback };
+    } catch { return { currentVersion: DSH_VERSION, rollback: false }; }
+  }
+  isPortable(): boolean { return this.portable; }
+  quitAndInstall(): void {
+    if (this.portable || !this.snapshot('app').canInstall) throw new Error('APP_UPDATE_NOT_VERIFIED');
+    updater().quitAndInstall(false, true);
+  }
 }

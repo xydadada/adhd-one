@@ -2,10 +2,10 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADHD One</title><link rel="stylesheet" href="app.css"></head>
 <body><main>
   <header><div class="logo">A1</div><div><h1>ADHD One</h1><p>Desktop for DeepSeek Harness</p></div><span class="badge">Unofficial community client</span></header>
-  <section class="hero"><div><span id="dot" class="dot"></span><strong id="state">正在读取状态…</strong><p id="workspace">尚未选择工作区</p></div><button id="choose">选择工作区</button><button id="restart">重启 Harness</button></section>
+  <section class="hero"><div><span id="dot" class="dot"></span><strong id="state">正在读取状态…</strong><p id="workspace">尚未选择工作区</p></div><button id="choose">选择工作区</button><button id="restart">重启 Harness</button><button id="quit">完整退出</button></section>
   <nav><button data-page="home" class="active">概览</button><button data-page="doctor">Provider Doctor</button><button data-page="updates">更新</button></nav>
   <section id="home" class="page active"><div class="grid"><article><h2>安全运行时</h2><p>仅绑定回环地址，独立 Node 环境，退出时终止完整进程树。</p></article><article><h2>隐私优先</h2><p>遥测默认关闭，不上传工作区、日志或 Provider 配置。</p></article><article><h2>官方 Harness UI</h2><p>直接加载上游 Web UI，不复制或改写会话功能。</p></article></div></section>
-  <section id="doctor" class="page"><h2>Provider Doctor</h2><p>快速检查免费；深度检查会发送一次真实工具调用，可能产生小额模型费用。</p><div class="actions"><button id="quick">快速检查</button><button id="deep" class="warn">确认并深度检查</button><button id="copy">复制脱敏报告</button></div><pre id="report">尚未运行诊断。</pre></section>
-  <section id="updates" class="page"><h2>双通道更新</h2><div class="actions"><button data-update="app">检查桌面壳更新</button><button data-update="runtime">检查 Harness 更新</button></div><pre id="update">更新仅在确认后下载和安装。</pre></section>
+  <section id="doctor" class="page"><h2>Provider Doctor</h2><p>快速检查免费；深度检查会发送一次真实工具调用，可能产生小额模型费用。</p><div class="actions"><button id="quick">快速检查</button><button id="deep" class="warn">确认并深度检查</button><button id="cancel-doctor">取消</button><button id="copy">复制脱敏报告</button></div><pre id="report">尚未运行诊断。</pre></section>
+  <section id="updates" class="page"><h2>双通道更新</h2><div class="actions"><button data-update="app">检查桌面壳更新</button><button data-update="runtime">检查 Harness 更新</button><button data-install="app">确认下载应用更新</button><button data-install="runtime">确认安装 Runtime</button></div><pre id="update">更新仅在确认后下载和安装。</pre></section>
   <footer>Powered by the official @deepseek-ai/dsh · Not affiliated with or endorsed by DeepSeek.</footer>
 </main><script src="app.js"></script></body></html>

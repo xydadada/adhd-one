@@ -10,7 +10,9 @@ files:
   - package.json
   - LICENSE
   - THIRD_PARTY_NOTICES.md
+  - '!**/*.map'
 asar: true
+compression: maximum
 extraResources:
   - from: vendor/node
     to: node-runtime
@@ -21,6 +23,8 @@ extraResources:
     to: supervisor/supervisor.mjs
   - from: node_modules/7zip-bin/win/x64/7za.exe
     to: tools/7za.exe
+  - from: build/licenses
+    to: licenses
 npmRebuild: false
 afterPack: scripts/after-pack.mjs
 win:
@@ -34,7 +38,9 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: ADHD One
+  menuCategory: false
   deleteAppDataOnUninstall: false
+  differentialPackage: false
   include: build/installer.nsh
 publish:
   - provider: github

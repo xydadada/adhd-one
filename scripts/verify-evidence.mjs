@@ -33,7 +33,7 @@ const CYCLE_KEYS = new Set([
   'exitSignal', 'forceKillRequested', 'forceKillVerified', 'forcedTermination', 'cleanup',
   'cleanupRootExisted', 'cleanupRootAbsent', 'cleanupVerified',
   'finalScopedProcessAuditPassed', 'finalScopedProcessAuditCount',
-  'finalScopedProcessAuditPids', 'errorCode', 'stdoutBytes', 'stderrBytes',
+  'finalScopedProcessAuditPids', 'finalScopedProcessAuditKinds', 'errorCode', 'stdoutBytes', 'stderrBytes',
   'workspaceWriteVerified', 'workspaceWrite'
 ]);
 
@@ -78,6 +78,7 @@ const WORKSPACE_BOOLEAN_KEYS = [
 ];
 
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{1,63}$/u;
+const PROCESS_AUDIT_KINDS = new Set(['known-identity', 'known-ancestor', 'temp-root', 'launch-executable']);
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const PRODUCTION_ERROR_CODES = new Set([
   'ACCESS_DENIED',
@@ -293,11 +294,13 @@ function validCycle(cycle, evidence, expected, index, expectedPortableMode = fal
     || !NON_NEGATIVE_CYCLE_NUMBER_KEYS.every(key => isNonNegativeInteger(cycle[key]))) return false;
   if (cycle.errorCode !== undefined && !isNullableProductionErrorCode(cycle.errorCode)) return false;
   if (!Array.isArray(cycle.remainingPids) || !Array.isArray(cycle.finalScopedProcessAuditPids)
+    || !Array.isArray(cycle.finalScopedProcessAuditKinds)
     || !cycle.remainingPids.every(isPositiveInteger)
     || !cycle.finalScopedProcessAuditPids.every(isPositiveInteger)
+    || !cycle.finalScopedProcessAuditKinds.every(kind => PROCESS_AUDIT_KINDS.has(kind))
     || cycle.remainingPids.length !== 0
     || cycle.finalScopedProcessAuditCount !== cycle.finalScopedProcessAuditPids.length
-    || (cycle.finalScopedProcessAuditPassed === true && cycle.finalScopedProcessAuditCount !== 0)) return false;
+    || (cycle.finalScopedProcessAuditPassed === true && (cycle.finalScopedProcessAuditCount !== 0 || cycle.finalScopedProcessAuditKinds.length !== 0))) return false;
   if ((cycle.exitCode !== null && !isNonNegativeInteger(cycle.exitCode))
     || (cycle.exitSignal !== null && (typeof cycle.exitSignal !== 'string' || !SAFE_CODE.test(cycle.exitSignal)))) return false;
   if (cycle.portableMode !== evidence.portableMode || cycle.passed !== true

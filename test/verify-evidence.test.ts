@@ -89,6 +89,7 @@ function cycle(scenario: string, number: number, portableMode = false): JsonObje
     finalScopedProcessAuditPassed: true,
     finalScopedProcessAuditCount: 0,
     finalScopedProcessAuditPids: [],
+    finalScopedProcessAuditKinds: [],
     stdoutBytes: 0,
     stderrBytes: 0,
     workspaceWriteVerified: write,

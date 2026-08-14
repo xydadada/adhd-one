@@ -108,6 +108,7 @@ function portableEvidence() {
       finalScopedProcessAuditPassed: true,
       finalScopedProcessAuditCount: 0,
       finalScopedProcessAuditPids: [],
+      finalScopedProcessAuditKinds: [],
       stdoutBytes: 0,
       stderrBytes: 0,
       workspaceWriteVerified: false,

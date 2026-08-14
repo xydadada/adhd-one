@@ -38,6 +38,7 @@ describe('packaged E2E evidence safety', () => {
         stdoutBytes: 12,
         stderrBytes: 18,
         remainingPids: [123, 'C:\\private'],
+        finalScopedProcessAuditKinds: ['known-ancestor', 'C:\\private'],
         cleanup: 'failed'
       }]
     });
@@ -46,6 +47,7 @@ describe('packaged E2E evidence safety', () => {
     expect(value.executable).toBe('ADHD One.exe');
     expect(value.cycles[0]?.errorCode).toBe('EADDRINUSE');
     expect(value.cycles[0]?.remainingPids).toEqual([123]);
+    expect(value.cycles[0]?.finalScopedProcessAuditKinds).toEqual(['known-ancestor']);
     expect(serialized).not.toMatch(/Alice|AppData|Authorization|super-secret|rawEnvironment|stdout"|stderr"|%5C/iu);
   });
 

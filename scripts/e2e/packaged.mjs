@@ -23,6 +23,7 @@ const EVIDENCE_CLEANUP_STATES = new Set(['pending', 'removed', 'failed', 'not-cr
 const WORKSPACE_RPC_CLIENT_SOURCES = new Set(['not-run', 'packaged-asar', 'local-out', 'unavailable']);
 const WORKSPACE_PERMISSION_MODES = new Set(['not-run', 'workspace-write', 'danger-full-access', 'other', 'unknown']);
 const WORKSPACE_APPROVAL_STATES = new Set(['not-requested', 'unexpected', 'rejected']);
+const PROCESS_AUDIT_KINDS = new Set(['known-identity', 'known-ancestor', 'temp-root', 'launch-executable']);
 const WORKSPACE_PROVIDER_SEQUENCES = new Set(['not-run', 'matched', 'mismatch', 'unknown']);
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const SAFE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
@@ -191,6 +192,9 @@ function sanitizeCycleEvidence(record, defaultScenario = 'launch') {
     finalScopedProcessAuditCount: nonNegativeInteger(cycle.finalScopedProcessAuditCount, 0),
     finalScopedProcessAuditPids: Array.isArray(cycle.finalScopedProcessAuditPids)
       ? cycle.finalScopedProcessAuditPids.map(safePid).filter(pid => pid !== undefined)
+      : [],
+    finalScopedProcessAuditKinds: Array.isArray(cycle.finalScopedProcessAuditKinds)
+      ? [...new Set(cycle.finalScopedProcessAuditKinds.filter(kind => PROCESS_AUDIT_KINDS.has(kind)))].sort()
       : [],
     errorCode,
     stdoutBytes: nonNegativeInteger(cycle.stdoutBytes, 0),
@@ -793,14 +797,14 @@ function hasKnownProcessAncestor(item, currentByPid, knownByPid, knownPids, star
   return false;
 }
 
-function isScopedProcess(item, currentByPid, scope) {
+function scopedProcessKind(item, currentByPid, scope) {
   const known = scope.knownByPid.get(item.pid);
-  if (known && sameProcessIdentity(item, known)) return true;
-  if (hasKnownProcessAncestor(item, currentByPid, scope.knownByPid, scope.knownPids, scope.startedAt)) return true;
-  if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath))) return true;
-  if (!processStartedDuringCycle(item, scope.startedAt)) return false;
+  if (known && sameProcessIdentity(item, known)) return 'known-identity';
+  if (hasKnownProcessAncestor(item, currentByPid, scope.knownByPid, scope.knownPids, scope.startedAt)) return 'known-ancestor';
+  if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath))) return 'temp-root';
+  if (!processStartedDuringCycle(item, scope.startedAt)) return undefined;
   return scope.executablePaths.some(executablePath =>
-    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath));
+    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath)) ? 'launch-executable' : undefined;
 }
 
 async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots }) {
@@ -823,17 +827,22 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
     while (true) {
       const processes = await windowsProcesses();
       const currentByPid = new Map(processes.filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
-      lastMatches = processes.filter(item => safePid(item?.pid) && item.pid !== process.pid && isScopedProcess(item, currentByPid, scope));
+      lastMatches = processes.flatMap(item => {
+        if (!safePid(item?.pid) || item.pid === process.pid) return [];
+        const kind = scopedProcessKind(item, currentByPid, scope);
+        return kind ? [{ item, kind }] : [];
+      });
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        return { verified: lastMatches.length === 0, pids: lastMatches.map(item => item.pid) };
+        return { verified: lastMatches.length === 0, pids: lastMatches.map(match => match.item.pid), kinds: [...new Set(lastMatches.map(match => match.kind))].sort() };
       }
       await delay(Math.min(POLL_INTERVAL_MS, remaining));
     }
   } catch (error) {
     return {
       verified: false,
-      pids: lastMatches.map(item => item.pid),
+      pids: lastMatches.map(match => match.item.pid),
+      kinds: [...new Set(lastMatches.map(match => match.kind))].sort(),
       errorCode: stableStageErrorCode(error, 'PROCESS_PATH_AUDIT_FAILED', 'PROCESS_PATH_AUDIT_TIMEOUT')
     };
   }
@@ -1235,6 +1244,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     finalScopedProcessAuditPassed: false,
     finalScopedProcessAuditCount: 0,
     finalScopedProcessAuditPids: [],
+    finalScopedProcessAuditKinds: [],
     errorCode: undefined,
     stdoutBytes: 0,
     stderrBytes: 0,
@@ -1435,6 +1445,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     record.finalScopedProcessAuditPassed = processAudit.verified === true;
     record.finalScopedProcessAuditPids = processAudit.pids;
     record.finalScopedProcessAuditCount = processAudit.pids.length;
+    record.finalScopedProcessAuditKinds = processAudit.kinds ?? [];
     record.errorCode ??= processAudit.errorCode;
     if (!record.finalScopedProcessAuditPassed) record.errorCode ??= 'PROCESS_PATH_AUDIT_FOUND';
     if (prepared && record.cleanup === 'removed' && !await pathIsAbsent(prepared.root)) {

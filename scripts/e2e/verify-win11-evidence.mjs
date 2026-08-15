@@ -142,12 +142,40 @@ function looksLikePath(value) {
 }
 
 function hasDuplicateJsonKeys(text) {
-  const keys = new Set();
-  const propertyPattern = /"(?:\\.|[^"\\])*"\s*:/gu;
-  for (const match of text.matchAll(propertyPattern)) {
-    const literal = match[0].slice(0, match[0].lastIndexOf(':')).trim();
+  const scopes = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '{') {
+      scopes.push(new Set());
+      continue;
+    }
+    if (character === '[') {
+      scopes.push(undefined);
+      continue;
+    }
+    if (character === '}' || character === ']') {
+      scopes.pop();
+      continue;
+    }
+    if (character !== '"') continue;
+
+    const start = index;
+    index += 1;
+    for (; index < text.length; index += 1) {
+      if (text[index] === '\\') {
+        index += 1;
+        continue;
+      }
+      if (text[index] === '"') break;
+    }
+    let next = index + 1;
+    while (/\s/u.test(text[next] ?? '')) next += 1;
+    if (text[next] !== ':') continue;
+
+    const keys = scopes.at(-1);
+    if (!(keys instanceof Set)) return true;
     let key;
-    try { key = JSON.parse(literal); }
+    try { key = JSON.parse(text.slice(start, index + 1)); }
     catch { return true; }
     if (keys.has(key)) return true;
     keys.add(key);

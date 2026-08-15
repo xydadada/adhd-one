@@ -164,6 +164,29 @@ describe('offline Windows 11 evidence verifier', () => {
     });
   });
 
+  it('normalizes escaped duplicate keys but scopes names to each object', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'win11-evidence-'));
+    roots.push(root);
+    const escapedDuplicate = path.join(root, 'escaped-duplicate.json');
+    const duplicateText = JSON.stringify(validEvidence()).replace(
+      '"sha256Verified":true',
+      '"sha256Verified":false,"\\u0073ha256Verified":true'
+    );
+    await writeFile(escapedDuplicate, duplicateText, 'utf8');
+    await expect(verifyWin11EvidenceFile(escapedDuplicate)).resolves.toEqual({
+      ok: false,
+      errors: [ERROR.JSON_INVALID]
+    });
+
+    const repeatedAcrossObjects = path.join(root, 'repeated-across-objects.json');
+    const evidence = validEvidence();
+    (evidence.platform as JsonObject).shared = 1;
+    (evidence.executable as JsonObject).shared = 2;
+    await writeFile(repeatedAcrossObjects, JSON.stringify(evidence), 'utf8');
+    const result = await verifyWin11EvidenceFile(repeatedAcrossObjects);
+    expect(result.errors).toEqual([ERROR.EXTRA_FIELD]);
+  });
+
   it('does not accept a self-reported pass field or a path-like unknown field', () => {
     const evidence = clone(validEvidence());
     evidence.passed = true;

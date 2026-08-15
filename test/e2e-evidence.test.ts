@@ -4,6 +4,7 @@ import {
   cdpClosed,
   isValidCdpWebSocketUrl,
   sanitizeEvidence,
+  scopedProcessKind,
   shouldCopyPortableEntry,
   stableErrorCode,
   stableStageErrorCode,
@@ -113,6 +114,14 @@ describe('packaged E2E evidence safety', () => {
 
     expect(calls).toBe(2);
     expect(tree.map(item => item.pid)).toEqual([100, 200]);
+  });
+
+  it('does not claim an unrelated same-path process without this E2E launch markers', () => {
+    const item = { pid: 300, parentPid: 1, executablePath: 'C:\\ADHD One.exe', created: '20260815000000.000000+000', commandLine: '"C:\\ADHD One.exe"' };
+    const scope = { knownByPid: new Map(), knownPids: new Set(), startedAt: 0, tempRoots: [], executablePaths: ['C:\\ADHD One.exe'], commandMarkers: ['--user-data-dir=C:\\e2e', '--remote-debugging-port=43123'] };
+
+    expect(scopedProcessKind(item, new Map(), scope)).toBeUndefined();
+    expect(scopedProcessKind({ ...item, commandLine: `${item.commandLine} ${scope.commandMarkers.join(' ')}` }, new Map(), scope)).toBe('launch-executable');
   });
 
   it('keeps workspace-write evidence to booleans and enums', () => {

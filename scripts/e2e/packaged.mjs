@@ -705,7 +705,7 @@ export function shouldCopyPortableEntry(sourceRoot, source) {
 }
 
 async function windowsProcesses() {
-  const script = "$selfPid = $PID; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | Where-Object { $_.ProcessId -ne $selfPid -and $_.ParentProcessId -ne $selfPid } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate | ConvertTo-Json -Compress";
+  const script = "$selfPid = $PID; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | Where-Object { $_.ProcessId -ne $selfPid -and $_.ParentProcessId -ne $selfPid } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | ConvertTo-Json -Compress";
   const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   const value = JSON.parse(stdout);
   return (Array.isArray(value) ? value : [value]).map(item => ({
@@ -713,7 +713,8 @@ async function windowsProcesses() {
     parentPid: Number(item.ParentProcessId),
     name: String(item.Name ?? ''),
     executablePath: String(item.ExecutablePath ?? ''),
-    created: String(item.CreationDate ?? '')
+    created: String(item.CreationDate ?? ''),
+    commandLine: String(item.CommandLine ?? '')
   }));
 }
 
@@ -797,17 +798,19 @@ function hasKnownProcessAncestor(item, currentByPid, knownByPid, knownPids, star
   return false;
 }
 
-function scopedProcessKind(item, currentByPid, scope) {
+export function scopedProcessKind(item, currentByPid, scope) {
   const known = scope.knownByPid.get(item.pid);
   if (known && sameProcessIdentity(item, known)) return 'known-identity';
   if (hasKnownProcessAncestor(item, currentByPid, scope.knownByPid, scope.knownPids, scope.startedAt)) return 'known-ancestor';
   if (scope.tempRoots.some(root => pathIsWithin(root, item.executablePath))) return 'temp-root';
   if (!processStartedDuringCycle(item, scope.startedAt)) return undefined;
-  return scope.executablePaths.some(executablePath =>
-    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath)) ? 'launch-executable' : undefined;
+  const matchingExecutable = scope.executablePaths.some(executablePath =>
+    normalizedWindowsPath(item.executablePath) === normalizedWindowsPath(executablePath));
+  return matchingExecutable && scope.commandMarkers.every(marker => item.commandLine.includes(marker))
+    ? 'launch-executable' : undefined;
 }
 
-async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots }) {
+async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots, commandMarkers }) {
   const knownByPid = new Map((knownProcesses ?? []).filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
   const knownPids = new Set(knownByPid.keys());
   if (safePid(rootPid)) knownPids.add(rootPid);
@@ -819,7 +822,8 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
       ...(executablePaths ?? []),
       ...(knownProcesses ?? []).map(item => item?.executablePath)
     ].filter(value => typeof value === 'string' && value.length > 0))],
-    tempRoots: [...new Set((tempRoots ?? []).filter(value => typeof value === 'string' && value.length > 0))]
+    tempRoots: [...new Set((tempRoots ?? []).filter(value => typeof value === 'string' && value.length > 0))],
+    commandMarkers: [...new Set((commandMarkers ?? []).filter(value => typeof value === 'string' && value.length > 0))]
   };
   const deadline = Date.now() + PROCESS_PATH_AUDIT_TIMEOUT_MS;
   let lastMatches = [];
@@ -1440,7 +1444,10 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
       rootPid: child?.pid,
       knownProcesses: launchedTree,
       executablePaths: [executable, launchExecutable],
-      tempRoots: prepared ? [prepared.root] : []
+      tempRoots: prepared ? [prepared.root] : [],
+      commandMarkers: prepared && record.cdpPort
+        ? [`--user-data-dir=${prepared.userData}`, `--remote-debugging-port=${record.cdpPort}`]
+        : []
     });
     record.finalScopedProcessAuditPassed = processAudit.verified === true;
     record.finalScopedProcessAuditPids = processAudit.pids;

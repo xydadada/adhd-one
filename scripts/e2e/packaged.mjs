@@ -264,6 +264,7 @@ export function sanitizeEvidence(evidence) {
 function sanitizeQualificationCycle(record) {
   const cycle = record ?? {};
   const forcedTermination = cycle.forcedTermination === true;
+  const hostToolchainPathExcluded = cycle.hostToolchainPathExcluded === true;
   const spawnToControlWindowMs = nonNegativeInteger(cycle.spawnToControlWindowMs);
   const restartToReadyMs = nonNegativeInteger(cycle.restartToReadyMs);
   const quitToExitMs = nonNegativeInteger(cycle.quitToExitMs);
@@ -276,8 +277,9 @@ function sanitizeQualificationCycle(record) {
   return {
     cycle: nonNegativeInteger(cycle.cycle, 1),
     scenario: 'qualification',
-    passed: cycle.passed === true && !forcedTermination && withinLimits,
+    passed: cycle.passed === true && !forcedTermination && hostToolchainPathExcluded && withinLimits,
     spawnVerified: cycle.spawnVerified === true,
+    hostToolchainPathExcluded,
     spawnToControlWindowMs,
     controlWindowVerified: cycle.controlWindowVerified === true,
     controlWindowOperational: cycle.controlWindowOperational === true,
@@ -456,6 +458,13 @@ function createTestEnvironment(root, appData, localAppData) {
   environment.ComSpec = path.join(systemRoot, 'System32', 'cmd.exe');
   environment.PATH = path.join(systemRoot, 'System32');
   return environment;
+}
+
+export function isHostToolchainPathExcluded(environment) {
+  if (!environment || typeof environment !== 'object') return false;
+  const systemRoot = environment.SystemRoot ?? environment.windir;
+  if (typeof systemRoot !== 'string' || systemRoot.length === 0) return false;
+  return environment.PATH === path.join(systemRoot, 'System32');
 }
 
 function observeExit(child) {
@@ -1529,6 +1538,7 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     scenario: 'qualification',
     passed: false,
     spawnVerified: false,
+    hostToolchainPathExcluded: false,
     spawnToControlWindowMs: undefined,
     controlWindowVerified: false,
     controlWindowOperational: false,
@@ -1599,6 +1609,8 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
 
     remoteDebuggingPort = await findFreeLoopbackPort();
     const environment = createTestEnvironment(prepared.root, prepared.appData, prepared.localAppData);
+    record.hostToolchainPathExcluded = isHostToolchainPathExcluded(environment);
+    if (!record.hostToolchainPathExcluded) throw new Error('HOST_TOOLCHAIN_PATH_NOT_EXCLUDED');
     const spawnStartedAt = performance.now();
     child = spawn(launchExecutable, [
       `--user-data-dir=${prepared.userData}`,
@@ -1738,6 +1750,7 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
       && record.cdpClosed
       && record.finalScopedProcessAuditPassed;
     record.passed = record.spawnVerified
+      && record.hostToolchainPathExcluded
       && record.controlWindowVerified
       && record.controlWindowOperational
       && record.coldRuntimeReadyVerified

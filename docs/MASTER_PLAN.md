@@ -382,7 +382,7 @@ npm run e2e:packaged -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evi
 
 ### 阶段 E：真实 Windows 11 与 RC，89% → 94%
 
-GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干净 Windows 11 x64 VM 执行同一套脚本。VM 不安装系统 Node/npm/pnpm；覆盖中文用户名、空格路径、长路径、空 PATH、只读 workspace、崩溃、离线、配置损坏、更新中断和 A/B 坏槽。不得把 Server 结果描述成 Windows 11 结果。
+GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干净 Windows 11 x64 VM 执行同一套脚本。VM 不安装系统 Node/npm/pnpm；测试启动环境剥离继承的宿主工具链 PATH，仅保留 Windows System32 供 PowerShell 等必要系统工具使用；覆盖中文用户名、空格路径、长路径、只读 workspace、崩溃、离线、配置损坏、更新中断和 A/B 坏槽。不得把 Server 结果描述成 Windows 11 结果。
 
 当前可执行：
 

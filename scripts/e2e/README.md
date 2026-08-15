@@ -6,7 +6,7 @@ The script:
 
 - starts the final executable with `child_process.spawn()`;
 - gives every cycle isolated temporary `APPDATA`, `LOCALAPPDATA`, `--user-data-dir`, profile, TEMP, and workspace directories;
-- restricts the child `PATH` to the Windows `System32` directory and removes Node/pnpm override variables;
+- strips the inherited host toolchain `PATH`, then gives the child only Windows `System32` so required OS tools remain available without resolving system Node/npm/pnpm;
 - allocates a fresh `127.0.0.1` remote-debugging port;
 - parses `/json/version`, requires its `webSocketDebuggerUrl` to use `ws:`/`wss:`, point to a loopback host, and carry the exact allocated port, then connects with `chromium.connectOverCDP()`;
 - finds the `adhd-one://app/` ControlWindow, verifies `#state`, and waits for `Harness：ready`;

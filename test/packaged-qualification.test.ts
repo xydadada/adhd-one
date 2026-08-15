@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CLI_SCENARIOS,
+  isHostToolchainPathExcluded,
   parseArgs,
   sanitizeQualificationEvidence
 } from '../scripts/e2e/packaged.mjs';
@@ -73,6 +74,7 @@ describe('packaged qualification contracts', () => {
         cycle: 1,
         passed: true,
         spawnVerified: true,
+        hostToolchainPathExcluded: true,
         spawnToControlWindowMs: 12,
         controlWindowVerified: true,
         controlWindowOperational: true,
@@ -123,6 +125,7 @@ describe('packaged qualification contracts', () => {
     expect(value.cycles).toHaveLength(1);
     expect(value.cycles[0]).toMatchObject({
       scenario: 'qualification',
+      hostToolchainPathExcluded: true,
       coldGeneration: 1,
       hotGeneration: 2,
       electronRootStable: true,
@@ -130,7 +133,19 @@ describe('packaged qualification contracts', () => {
       forcedTermination: false,
       errorCode: 'QUALIFICATION_FAILED'
     });
-    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|cpu|host|sha256|deadbeef/iu);
+    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|cpu|"host":|sha256|deadbeef/iu);
+  });
+
+  it('proves the app launch environment excludes the inherited host toolchain PATH', () => {
+    expect(isHostToolchainPathExcluded({
+      SystemRoot: 'C:\\Windows',
+      PATH: 'C:\\Windows\\System32'
+    })).toBe(true);
+    expect(isHostToolchainPathExcluded({
+      SystemRoot: 'C:\\Windows',
+      PATH: 'C:\\Program Files\\nodejs;C:\\Windows\\System32'
+    })).toBe(false);
+    expect(isHostToolchainPathExcluded({ PATH: 'C:\\Windows\\System32' })).toBe(false);
   });
 
   it('cannot sanitize a forced termination as a passing qualification', () => {
@@ -176,6 +191,7 @@ describe('packaged qualification contracts', () => {
 
     expect(qualification.match(/spawn\(/gu)).toHaveLength(1);
     expect(qualification).toContain('waitForControlWindow(browser, child, exitPromise)');
+    expect(qualification).toContain('isHostToolchainPathExcluded(environment)');
     expect(qualification).toContain('control.evaluate(() => window.adhdOne.restartRuntime())');
     expect(qualification).toContain('waitForRuntimeReady(control, child, exitPromise, minimumGeneration)');
     expect(qualification).toContain('mergeProcessTrees(coldTree, hotTree)');

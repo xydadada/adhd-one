@@ -179,21 +179,28 @@ export class RuntimeController extends EventEmitter {
 
   start(): Promise<RuntimeSnapshotV2> {
     const { intent, signal } = this.beginIntent();
-    this.stopRequested = false;
     return this.queue.run(async () => {
       if (intent !== this.intentId) return this.snapshot();
+      this.stopRequested = false;
       if (this.snapshotValue.state === 'ready') return this.snapshot();
       if (['preparing', 'starting', 'stopping', 'updating'].includes(this.snapshotValue.state)) {
         throw new Error(`RUNTIME_BUSY:${this.snapshotValue.state}`);
       }
-      return this.startAttempt(false, intent, signal);
+      return this.startSafely(false, intent, signal);
     });
   }
 
   restart(): Promise<RuntimeSnapshotV2> {
     const { intent, signal } = this.beginIntent();
-    this.stopRequested = false;
-    return this.queue.run(async () => { if (intent !== this.intentId) return this.snapshot(); await this.stopInternal(); return this.startAttempt(false, intent, signal); });
+    this.stopRequested = true;
+    this.cancelRestart();
+    return this.queue.run(async () => {
+      if (intent !== this.intentId) return this.snapshot();
+      await this.stopInternal();
+      if (intent !== this.intentId) return this.snapshot();
+      this.stopRequested = false;
+      return this.startSafely(false, intent, signal);
+    });
   }
 
   stop(): Promise<RuntimeSnapshotV2> {
@@ -220,17 +227,46 @@ export class RuntimeController extends EventEmitter {
   }
 
   setUpdating(updating: boolean): Promise<RuntimeSnapshotV2> {
-    this.beginIntent();
+    const { intent } = this.beginIntent();
     this.cancelRestart();
     if (this.stableTimer) clearTimeout(this.stableTimer);
     this.stableTimer = undefined;
     this.stopRequested = updating;
     return this.queue.run(async () => {
+      if (intent !== this.intentId) return this.snapshot();
       if (this.process) await this.stopInternal();
+      if (intent !== this.intentId) return this.snapshot();
       this.stopRequested = updating;
       this.setSnapshot({ state: updating ? 'updating' : 'idle', pid: undefined, url: undefined, error: undefined });
       return this.snapshot();
     });
+  }
+
+  private async startSafely(portFallback: boolean, intent: number, signal: AbortSignal): Promise<RuntimeSnapshotV2> {
+    try {
+      return await this.startAttempt(portFallback, intent, signal);
+    } catch (error) {
+      let treeExited = true;
+      const child = this.process;
+      if (child) {
+        try { child.terminate(1); } catch { treeExited = false; }
+        treeExited = await child.waitForTreeExit(4_500).catch(() => false) && treeExited;
+        try { child.close(); } catch { treeExited = false; }
+        this.clearHandles(child);
+      }
+      if (this.cancelled(intent)) return this.cancelledSnapshot();
+      const raw = error instanceof Error ? error.message : String(error);
+      const terminationFailed = !treeExited || raw.includes('RUNTIME_TERMINATION_TIMEOUT');
+      this.setSnapshot({
+        state: 'failed',
+        pid: undefined,
+        url: undefined,
+        error: terminationFailed
+          ? { code: 'RUNTIME_TERMINATION_TIMEOUT', message: 'Harness process tree did not terminate within the shutdown deadline.' }
+          : { code: 'RUNTIME_START_FAILED', message: 'Harness could not be started safely.' }
+      });
+      return this.snapshot();
+    }
   }
 
   private async startAttempt(portFallback: boolean, intent: number, signal: AbortSignal): Promise<RuntimeSnapshotV2> {
@@ -464,12 +500,17 @@ export class RuntimeController extends EventEmitter {
             const raw = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
             if (Buffer.byteLength(raw, 'utf8') > 65_536) throw new Error('SUPERVISOR_FRAME_TOO_LARGE');
             const message = JSON.parse(raw) as SupervisorMessage;
+            if (!hello) {
+              if (message.v !== 1 || message.generation !== generation || message.type !== 'hello'
+                || message.nonce !== nonce || message.pid !== pid) throw new Error('SUPERVISOR_HANDSHAKE_REJECTED');
+              hello = true;
+              continue;
+            }
             if (message.v !== 1 || message.generation !== generation) continue;
             if (message.type === 'hello') {
               if (message.nonce !== nonce || message.pid !== pid) throw new Error('SUPERVISOR_HANDSHAKE_REJECTED');
-              hello = true;
-            } else if (message.type === 'ready' && hello && message.url) finish(undefined, message.url);
-            else if (message.type === 'fatal' && hello) throw new Error(`${message.code ?? 'SUPERVISOR_FATAL'}:${redactText(message.message ?? '')}`);
+            } else if (message.type === 'ready' && message.url) finish(undefined, message.url);
+            else if (message.type === 'fatal') throw new Error(`${message.code ?? 'SUPERVISOR_FATAL'}:${redactText(message.message ?? '')}`);
           }
         } catch (error) { finish(error); }
       }, 50);
@@ -548,7 +589,7 @@ export class RuntimeController extends EventEmitter {
     try {
       const state = JSON.parse(await readFile(stateFile, 'utf8')) as { active?: string; previous?: string; healthy?: boolean };
       if (state.active !== slot || (state.healthy === true && !allowHealthy)) return false;
-      if (state.previous === 'A' || state.previous === 'B') {
+      if ((state.previous === 'A' || state.previous === 'B') && state.previous !== slot) {
         const previousPackage = JSON.parse(await readFile(path.join(this.paths.runtimes, `slot-${state.previous}`, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')) as { version?: string };
         await writeFileAtomic(stateFile, JSON.stringify({ schemaVersion: 1, active: state.previous, previous: 'bundled', version: previousPackage.version, healthy: true, candidate: false, rolledBackFrom: slot }) + '\n');
       } else {
@@ -574,11 +615,16 @@ export class RuntimeController extends EventEmitter {
       try { child.terminate(1); } catch {}
       exited = await child.waitForTreeExit(Math.max(0, deadline - Date.now())).catch(() => false);
     }
-    child.close();
+    let closeFailed = false;
+    try { child.close(); } catch { closeFailed = true; }
     this.clearHandles(child);
-    if (!exited) {
-      this.setSnapshot({ state: 'failed', pid: undefined, url: undefined, error: { code: 'RUNTIME_TERMINATION_TIMEOUT', message: 'Harness process tree did not terminate within the shutdown deadline.' } });
-      throw new Error('RUNTIME_TERMINATION_TIMEOUT');
+    if (!exited || closeFailed) {
+      const code = !exited ? 'RUNTIME_TERMINATION_TIMEOUT' : 'RUNTIME_HANDLE_CLOSE_FAILED';
+      const message = !exited
+        ? 'Harness process tree did not terminate within the shutdown deadline.'
+        : 'Harness process handles could not be released safely.';
+      this.setSnapshot({ state: 'failed', pid: undefined, url: undefined, error: { code, message } });
+      throw new Error(code);
     }
     this.setSnapshot({ state: 'idle', pid: undefined, url: undefined, error: undefined });
     return this.snapshot();
@@ -587,7 +633,7 @@ export class RuntimeController extends EventEmitter {
   private handleUnexpectedExit(child: ManagedProcess, generation: number, code: number, detail?: string): void {
     const current = this.process === child;
     if (current && (this.stopping || this.stopRequested)) return;
-    child.close();
+    try { child.close(); } catch { /* the crash state remains failed */ }
     if (current) this.clearHandles(child);
     if (!current || this.stopping || this.stopRequested || generation !== this.snapshotValue.generation || this.snapshotValue.state !== 'ready') return;
     this.setSnapshot({ state: 'failed', pid: undefined, url: undefined, error: { code: 'RUNTIME_CRASHED', message: detail ?? `Harness exited with code ${code}.` } });
@@ -611,7 +657,7 @@ export class RuntimeController extends EventEmitter {
         if (this.stopRequested || restartIntent !== this.intentId) return this.snapshot();
         if (await this.rollbackCandidate(slot, true)) {
           this.clearCandidateProbation(slot);
-          return this.startAttempt(false, restartIntent, restartSignal);
+          return this.startSafely(false, restartIntent, restartSignal);
         }
         return this.snapshot();
       }).catch(() => undefined);
@@ -620,7 +666,7 @@ export class RuntimeController extends EventEmitter {
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
       if (this.stopRequested || generation !== this.snapshotValue.generation || restartIntent !== this.intentId) return;
-      void this.queue.run(() => restartIntent === this.intentId && !this.stopRequested ? this.startAttempt(false, restartIntent, restartSignal) : Promise.resolve(this.snapshot())).catch(() => undefined);
+      void this.queue.run(() => restartIntent === this.intentId && !this.stopRequested ? this.startSafely(false, restartIntent, restartSignal) : Promise.resolve(this.snapshot())).catch(() => undefined);
     }, delay);
     this.restartTimer.unref();
   }
@@ -628,9 +674,11 @@ export class RuntimeController extends EventEmitter {
   private async terminateAndRelease(child: ManagedProcess): Promise<void> {
     try { child.terminate(1); } catch {}
     const exited = await child.waitForTreeExit(4_500).catch(() => false);
-    child.close();
+    let closeFailed = false;
+    try { child.close(); } catch { closeFailed = true; }
     this.clearHandles(child);
     if (!exited) throw new Error('RUNTIME_TERMINATION_TIMEOUT');
+    if (closeFailed) throw new Error('RUNTIME_HANDLE_CLOSE_FAILED');
   }
 
   private clearHandles(expected?: ManagedProcess): void {

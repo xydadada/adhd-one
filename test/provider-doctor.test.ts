@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DshRpcClient } from '../src/dsh-rpc-client.js';
 import { ProviderDoctor } from '../src/provider-doctor.js';
@@ -41,6 +42,9 @@ interface ResultMetadataOverride {
   turn?: number;
   step?: number;
   toolCallId?: string;
+  readToolName?: string;
+  readText?: string;
+  assistantRole?: string;
 }
 
 function sessionEvent(
@@ -76,18 +80,18 @@ function roundTripEvents(nonce: string, sentinelName: string, override: ResultMe
       turn: 1,
       step: 2,
       callId: 'call-read',
-      name: 'read',
+      name: override.readToolName ?? 'read',
       arguments: JSON.stringify({ file_path: sentinelName })
     }),
     sessionEvent(4, 'tool/result', {
       turn: 1,
       step: 2,
-      message: resultMessage('result-read', 'call-read', 'call-read', nonce)
+      message: resultMessage('result-read', 'call-read', 'call-read', override.readText ?? nonce)
     }, { sourceEventSeqs: [3], surfaceOp: 'append' }),
     sessionEvent(5, 'assistant/message', {
       turn: 1,
       step: 3,
-      message: { id: 'assistant-final', role: 'assistant', content: [{ type: 'text', text: nonce }] }
+      message: { id: 'assistant-final', role: override.assistantRole ?? 'assistant', content: [{ type: 'text', text: nonce }] }
     }),
     sessionEvent(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
   ];
@@ -337,7 +341,7 @@ describe('ProviderDoctor', () => {
         await writeFile(path.join((await findWorkspace(root)), match[1]), match[2], 'utf8');
         events.push(...roundTripEvents(match[2], match[1]));
         for (const event of events) emitMux?.({ rpcId: `event-${String(event.seq)}`, payload: { type: 'session/event', sessionId: 'doctor-session', event } });
-        return {} as never;
+        return { accepted: true } as never;
       }
       if (method === 'session.history') return { hasMore: false, events: events.map(event => ({ event })) } as never;
       return {} as never;
@@ -392,7 +396,7 @@ describe('ProviderDoctor', () => {
         await writeFile(path.join((await findWorkspace(root)), match[1]), match[2], 'utf8');
         events.push(...roundTripEvents(match[2], match[1], override));
         for (const event of events) emitMux?.({ rpcId: `event-${String(event.seq)}`, payload: { type: 'session/event', sessionId: 'doctor-session', event } });
-        return {} as never;
+        return { accepted: true } as never;
       }
       if (method === 'session.history') return { hasMore: false, events: events.map(event => ({ event })) } as never;
       return {} as never;
@@ -402,6 +406,90 @@ describe('ProviderDoctor', () => {
       const deep = report.checks.find(check => check.id === 'deep-tool-round-trip');
       expect(deep).toMatchObject({ status: 'fail', code: 'DSH_PROTOCOL_INCOMPATIBLE' });
       expect(calls).toContain('session.history');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['an unexpected tool', { readToolName: 'shell' }, 'TOOL_ARGUMENT_INVALID'],
+    ['a read result with the wrong nonce', { readText: 'wrong-nonce' }, 'TOOL_ARGUMENT_INVALID'],
+    ['a final nonce from a non-assistant role', { assistantRole: 'user' }, 'MALFORMED_RESPONSE']
+  ])('rejects %s instead of reporting a false deep-check pass', async (_label, override, expectedCode) => {
+    const root = await tempRoot();
+    let emitMux: ((envelope: { rpcId: string; payload: Record<string, unknown> }) => void) | undefined;
+    const events: Array<Record<string, unknown>> = [];
+    vi.spyOn(DshRpcClient.prototype, 'openMux').mockImplementation(onEnvelope => {
+      emitMux = onEnvelope;
+      return { opened: Promise.resolve(), close: vi.fn() };
+    });
+    vi.spyOn(DshRpcClient.prototype, 'call').mockImplementation(async (method, payload) => {
+      if (method === 'settings.describe') return { namespaces: [] } as never;
+      if (method === 'credentials.describe') return { credentials: {} } as never;
+      if (method === 'session.create') return { sessionId: 'doctor-session' } as never;
+      if (method === 'session.models') return { routable: true, current: { provider: 'deepseek', model: 'deepseek-chat' } } as never;
+      if (method === 'session.prompt') {
+        const prompt = payload as { content: Array<{ text: string }> };
+        const match = prompt.content[0]?.text.match(/create ([^,]+), write exactly ([a-f0-9]+),/u);
+        if (!match) throw new Error('test prompt did not contain the sentinel');
+        await writeFile(path.join((await findWorkspace(root)), match[1]), match[2], 'utf8');
+        events.push(...roundTripEvents(match[2], match[1], override));
+        for (const event of events) emitMux?.({ rpcId: `event-${String(event.seq)}`, payload: { type: 'session/event', sessionId: 'doctor-session', event } });
+        return { accepted: true } as never;
+      }
+      if (method === 'session.history') return { hasMore: false, events: events.map(event => ({ event })) } as never;
+      return responseValue(method) as never;
+    });
+    try {
+      const report = await createDoctor(root).run('deep');
+      expect(report.checks.find(check => check.id === 'deep-tool-round-trip')).toMatchObject({ status: 'fail', code: expectedCode });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails immediately when session.prompt does not return the official accepted receipt', async () => {
+    const root = await tempRoot();
+    vi.spyOn(DshRpcClient.prototype, 'openMux').mockReturnValue({ opened: Promise.resolve(), close: vi.fn() });
+    vi.spyOn(DshRpcClient.prototype, 'call').mockImplementation(async method => {
+      if (method === 'settings.describe') return { namespaces: [] } as never;
+      if (method === 'credentials.describe') return { credentials: {} } as never;
+      if (method === 'session.create') return { sessionId: 'doctor-session' } as never;
+      if (method === 'session.models') return { routable: true, current: { provider: 'deepseek', model: 'deepseek-chat' } } as never;
+      if (method === 'session.prompt') return { accepted: false } as never;
+      return responseValue(method) as never;
+    });
+    try {
+      const report = await createDoctor(root).run('deep');
+      expect(report.checks.find(check => check.id === 'deep-tool-round-trip')).toMatchObject({ status: 'fail', code: 'MALFORMED_RESPONSE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an approval request and terminates the diagnostic wait immediately', async () => {
+    const root = await tempRoot();
+    let emitMux: ((envelope: { rpcId: string; payload: Record<string, unknown> }) => void) | undefined;
+    vi.spyOn(DshRpcClient.prototype, 'openMux').mockImplementation(onEnvelope => {
+      emitMux = onEnvelope;
+      return { opened: Promise.resolve(), close: vi.fn() };
+    });
+    const respond = vi.spyOn(DshRpcClient.prototype, 'respond').mockResolvedValue();
+    vi.spyOn(DshRpcClient.prototype, 'call').mockImplementation(async method => {
+      if (method === 'settings.describe') return { namespaces: [] } as never;
+      if (method === 'credentials.describe') return { credentials: {} } as never;
+      if (method === 'session.create') return { sessionId: 'doctor-session' } as never;
+      if (method === 'session.models') return { routable: true, current: { provider: 'deepseek', model: 'deepseek-chat' } } as never;
+      if (method === 'session.prompt') {
+        emitMux?.({ rpcId: 'approval-rpc', payload: { type: 'approval/requested', sessionId: 'doctor-session', approvalId: 'approval-1' } });
+        return { accepted: true } as never;
+      }
+      return responseValue(method) as never;
+    });
+    try {
+      const report = await createDoctor(root).run('deep');
+      expect(report.checks.find(check => check.id === 'deep-tool-round-trip')).toMatchObject({ status: 'fail', code: 'TOOL_ESCALATION_REQUIRED' });
+      expect(respond).toHaveBeenCalledWith('approval-rpc', expect.objectContaining({ outcome: 'rejected' }), expect.any(AbortSignal));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -429,7 +517,7 @@ describe('ProviderDoctor', () => {
           sessionEvent(2, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
         );
         for (const event of events) emitMux?.({ rpcId: `event-${String(event.seq)}`, payload: { type: 'session/event', sessionId: 'doctor-session', event } });
-        return {} as never;
+        return { accepted: true } as never;
       }
       if (method === 'session.history') return { hasMore: false, events: events.map(event => ({ event })) } as never;
       return {} as never;
@@ -491,6 +579,28 @@ describe('DshRpcClient cancellation', () => {
     controller.abort();
     try {
       await expect(handle.opened).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      handle.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('reports an unexpected mux close immediately after the connection opened', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const errors: unknown[] = [];
+    server.once('connection', socket => setTimeout(() => socket.close(), 0));
+    const handle = new DshRpcClient(`http://127.0.0.1:${port}`).openMux(
+      () => undefined,
+      undefined,
+      error => errors.push(error)
+    );
+    try {
+      await handle.opened;
+      await waitFor(() => errors.length > 0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ code: 'STREAM_CLOSED' });
     } finally {
       handle.close();
       await new Promise<void>(resolve => server.close(() => resolve()));

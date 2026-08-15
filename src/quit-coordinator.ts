@@ -1,8 +1,8 @@
 /** Coordinates the bounded shutdown path without depending on Electron globals. */
 
 export const RUNTIME_STOP_TIMEOUT_MS = 5_000;
-// Give Electron subprocesses time to observe app.exit() before the last-resort
-// process.exit(); the fallback still remains well below the five-second cap.
+// Give Electron subprocesses time to observe app.exit() after the five-second
+// runtime stop deadline before the last-resort process.exit().
 export const HARD_EXIT_DELAY_MS = 1_000;
 
 const MAX_HARD_EXIT_DELAY_MS = 5_000;
@@ -85,8 +85,9 @@ export class QuitCoordinator {
   private async coordinate(requestedExitCode: number | undefined): Promise<void> {
     const hardDeadline = Date.now() + this.stopTimeoutMs;
     this.fallbackExitCode = requestedExitCode ?? 1;
-    // Arm the absolute deadline before any shutdown hook can consume time.
-    this.scheduleHardExit(this.stopTimeoutMs);
+    // Arm the absolute fallback before any shutdown hook can consume time. The
+    // runtime is force-terminated at stopTimeoutMs; hardExit is a separate grace.
+    this.scheduleHardExit(this.stopTimeoutMs + this.hardExitDelayMs);
     try { this.dependencies.windows.prepareToQuit?.(); } catch { /* continue shutdown */ }
 
     let stopped = false;

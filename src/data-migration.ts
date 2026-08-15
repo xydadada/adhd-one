@@ -298,6 +298,32 @@ export async function copyLegacyDsh(source: string, destination: string): Promis
   }
 }
 
+export type LegacyDshImportOutcome = 'imported' | 'declined' | 'deferred';
+
+/** Keeps prompt bookkeeping separate from the staged copy so a failed import remains retryable. */
+export async function runLegacyDshImportFlow(options: {
+  accepted: boolean;
+  copy(): Promise<void>;
+  markPrompted(): Promise<void>;
+  retryAfterFailure(): Promise<boolean>;
+}): Promise<LegacyDshImportOutcome> {
+  if (!options.accepted) {
+    await options.markPrompted();
+    return 'declined';
+  }
+
+  for (;;) {
+    try {
+      await options.copy();
+      break;
+    } catch {
+      if (!await options.retryAfterFailure()) return 'deferred';
+    }
+  }
+  await options.markPrompted();
+  return 'imported';
+}
+
 /**
  * Verifies portable data can be written, flushed, and removed in-place.
  * It intentionally does not create the directory or fall back to another path.

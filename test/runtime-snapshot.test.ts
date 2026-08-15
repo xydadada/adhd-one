@@ -11,9 +11,11 @@ type ControllerInternals = {
   setSnapshot(patch: Partial<Omit<RuntimeSnapshotV2, 'health'>>): void;
   handleUnexpectedExit(child: ManagedProcess, generation: number, code: number): void;
   armStableTimer(generation: number): void;
+  waitForReady(child: ManagedProcess, generation: number, nonce: string, pid: number): Promise<{ kind: 'ready'; url: string }>;
   markRuntimeStable: ReturnType<typeof vi.fn>;
   rollbackCandidate: ReturnType<typeof vi.fn>;
   startAttempt: ReturnType<typeof vi.fn>;
+  stopInternal: ReturnType<typeof vi.fn>;
 };
 
 class FakeProcess implements ManagedProcess {
@@ -24,6 +26,16 @@ class FakeProcess implements ManagedProcess {
   terminate(_exitCode?: number): void {}
   waitForTreeExit(_timeoutMs: number): Promise<boolean> { return Promise.resolve(true); }
   close(): void {}
+}
+
+class BufferedFakeProcess extends FakeProcess {
+  private drained = false;
+  constructor(pid: number, private readonly payload: string) { super(pid); }
+  readAvailable(): Buffer {
+    if (this.drained) return Buffer.alloc(0);
+    this.drained = true;
+    return Buffer.from(this.payload, 'utf8');
+  }
 }
 
 function createController(workspace?: string): RuntimeController {
@@ -51,6 +63,39 @@ afterEach(() => {
 });
 
 describe('RuntimeSnapshotV2', () => {
+  it('requires the inherited supervisor pipe first frame to be the authenticated hello', async () => {
+    vi.useFakeTimers();
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    const child = new BufferedFakeProcess(777, [
+      JSON.stringify({ v: 1, generation: 6, type: 'starting' }),
+      JSON.stringify({ v: 1, generation: 7, type: 'hello', nonce: 'nonce', pid: 777 }),
+      JSON.stringify({ v: 1, generation: 7, type: 'ready', url: 'http://127.0.0.1:43123' })
+    ].join('\n') + '\n');
+
+    const ready = privateController.waitForReady(child, 7, 'nonce', child.pid);
+    const rejected = expect(ready).rejects.toThrow('SUPERVISOR_HANDSHAKE_REJECTED');
+    await vi.advanceTimersByTimeAsync(50);
+
+    await rejected;
+  });
+
+  it('accepts ready only after a valid first-frame supervisor hello', async () => {
+    vi.useFakeTimers();
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    const child = new BufferedFakeProcess(778, [
+      JSON.stringify({ v: 1, generation: 7, type: 'hello', nonce: 'nonce', pid: 778 }),
+      JSON.stringify({ v: 1, generation: 7, type: 'starting' }),
+      JSON.stringify({ v: 1, generation: 7, type: 'ready', url: 'http://127.0.0.1:43123' })
+    ].join('\n') + '\n');
+
+    const ready = privateController.waitForReady(child, 7, 'nonce', child.pid);
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(ready).resolves.toEqual({ kind: 'ready', url: 'http://127.0.0.1:43123' });
+  });
+
   it('starts with the V2-only shape and maps every runtime state to frozen health semantics', () => {
     const controller = createController();
     const privateController = internals(controller);
@@ -202,6 +247,59 @@ describe('RuntimeSnapshotV2', () => {
     expect((await controller.stop()).restartAttempt).toBe(0);
     expect((await controller.restart()).restartAttempt).toBe(0);
     expect(controller.snapshot().health).toBe('unhealthy');
+  });
+
+  it('converges an uncaught start-attempt failure to failed instead of remaining busy', async () => {
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    privateController.startAttempt = vi.fn(async () => { throw new Error('RUNTIME_SLOT_INVALID_ROLLBACK_FAILED'); });
+
+    await expect(controller.start()).resolves.toMatchObject({
+      state: 'failed',
+      error: { code: 'RUNTIME_START_FAILED', message: 'Harness could not be started safely.' }
+    });
+  });
+
+  it('suppresses an old child crash as soon as a manual restart intent is created', async () => {
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    const child = new FakeProcess(902);
+    privateController.process = child;
+    privateController.rollbackCandidate = vi.fn(async () => true);
+    privateController.startAttempt = vi.fn(async () => controller.snapshot());
+    privateController.setSnapshot({ state: 'ready', generation: 5, pid: child.pid, url: 'http://127.0.0.1:43123' });
+
+    const restarting = controller.restart();
+    privateController.handleUnexpectedExit(child, 5, 1);
+    await restarting;
+
+    expect(privateController.rollbackCandidate).not.toHaveBeenCalled();
+    expect(controller.snapshot().restartAttempt).toBe(0);
+  });
+
+  it('does not let a stale updating intent overwrite a newer start intent', async () => {
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    privateController.process = new FakeProcess(903);
+    privateController.setSnapshot({ state: 'failed', generation: 5 });
+    let finishStop!: () => void;
+    privateController.stopInternal = vi.fn(() => new Promise<RuntimeSnapshotV2>(resolve => {
+      finishStop = () => resolve(controller.snapshot());
+    }));
+    privateController.startAttempt = vi.fn(async () => {
+      privateController.setSnapshot({ state: 'ready', generation: 6, url: 'http://127.0.0.1:43123' });
+      return controller.snapshot();
+    });
+
+    const updating = controller.setUpdating(true);
+    await vi.waitFor(() => expect(privateController.stopInternal).toHaveBeenCalledOnce());
+    const starting = controller.start();
+    finishStop();
+    await updating;
+    await starting;
+
+    expect(controller.snapshot().state).toBe('ready');
+    expect(privateController.startAttempt).toHaveBeenCalledOnce();
   });
 
   it('clears a stale failure error when stopping without a live process', async () => {

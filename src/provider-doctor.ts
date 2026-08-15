@@ -404,17 +404,16 @@ function inspectEventSequence(events: SessionEventValue[], nonce: string, sentin
     try {
       const parsed = JSON.parse(data.arguments) as unknown;
       if (!isRecord(parsed)) throw new Error('tool arguments must be an object');
-      if (data.name === 'write' || data.name === 'read') {
-        if (typeof parsed.file_path !== 'string' || path.isAbsolute(parsed.file_path) || path.normalize(parsed.file_path) !== sentinelName) {
-          throw new Error('tool path does not match the sentinel');
-        }
-        if (data.name === 'write') {
-          if (parsed.content !== nonce || writeCallId) throw new Error('write arguments do not match the sentinel');
-          writeCallId = data.callId;
-        } else {
-          if (readCallId) throw new Error('duplicate sentinel read');
-          readCallId = data.callId;
-        }
+      if (data.name !== 'write' && data.name !== 'read') throw new Error('unexpected tool in diagnostic turn');
+      if (typeof parsed.file_path !== 'string' || path.isAbsolute(parsed.file_path) || path.normalize(parsed.file_path) !== sentinelName) {
+        throw new Error('tool path does not match the sentinel');
+      }
+      if (data.name === 'write') {
+        if (parsed.content !== nonce || writeCallId) throw new Error('write arguments do not match the sentinel');
+        writeCallId = data.callId;
+      } else {
+        if (readCallId) throw new Error('duplicate sentinel read');
+        readCallId = data.callId;
       }
     } catch {
       throw new DeepEvidenceError('TOOL_ARGUMENT_INVALID', 'Deep check observed unparseable tool arguments', flags);
@@ -450,6 +449,9 @@ function inspectEventSequence(events: SessionEventValue[], nonce: string, sentin
       throw new DeepEvidenceError('DSH_PROTOCOL_INCOMPATIBLE', 'Deep check observed mismatched tool result metadata', flags);
     }
     if (identity.failed) throw new DeepEvidenceError('TOOL_ARGUMENT_INVALID', 'Deep check observed a failed tool result', flags);
+    if (identity.callId === readCallId && textContent(matchingBlocks[0]?.content).trim() !== nonce) {
+      throw new DeepEvidenceError('TOOL_ARGUMENT_INVALID', 'Deep check read result did not contain the sentinel nonce', flags);
+    }
     if (resultPositions.has(identity.callId)) throw new DeepEvidenceError('MALFORMED_RESPONSE', 'Deep check observed duplicate tool results', flags);
     resultPositions.set(identity.callId, index);
   }
@@ -464,7 +466,8 @@ function inspectEventSequence(events: SessionEventValue[], nonce: string, sentin
   const finalAssistantMessages = events.filter((event, index) => {
     if (event.type !== 'assistant/message' || index <= lastResult) return false;
     const data = event.data;
-    return isRecord(data) && isRecord(data.message) && textContent(data.message.content).trim() === nonce;
+    return isRecord(data) && isRecord(data.message) && data.message.role === 'assistant'
+      && textContent(data.message.content).trim() === nonce;
   });
   if (finalAssistantMessages.length !== 1) throw new DeepEvidenceError('MALFORMED_RESPONSE', 'Deep check observed no unique exact final assistant nonce', flags);
   flags.finalNonce = true;
@@ -473,7 +476,8 @@ function inspectEventSequence(events: SessionEventValue[], nonce: string, sentin
   const assistantIndex = events.findLastIndex((event, index) => {
     if (event.type !== 'assistant/message' || index <= lastResult) return false;
     const data = event.data;
-    return isRecord(data) && isRecord(data.message) && textContent(data.message.content).trim() === nonce;
+    return isRecord(data) && isRecord(data.message) && data.message.role === 'assistant'
+      && textContent(data.message.content).trim() === nonce;
   });
   const turnEnds = events.filter((event, index) => {
     if (event.type !== 'turn/end' || index <= assistantIndex || !isRecord(event.data)) return false;
@@ -628,11 +632,19 @@ export class ProviderDoctor {
     const onAbort = () => rejectTurnEnd(abortReason(signal));
     signal.addEventListener('abort', onAbort, { once: true });
     let approvalEscalated = false;
+    let approvalResponse: Promise<void> | undefined;
     const mux = client.openMux(envelope => {
       const payload = envelope.payload;
-      if (payload.type === 'approval/requested' && payload.sessionId === sessionId && typeof payload.approvalId === 'string') {
+      if (payload.type === 'approval/requested' && payload.sessionId === sessionId) {
+        if (typeof payload.approvalId !== 'string' || payload.approvalId.length === 0) {
+          muxMalformed = true;
+          rejectTurnEnd(new DshRpcError('MALFORMED_RESPONSE', 'The diagnostic approval request was malformed.'));
+          return;
+        }
         approvalEscalated = true;
-        void client.respond(envelope.rpcId, { sessionId, approvalId: payload.approvalId, outcome: 'rejected' }, signal).catch(() => undefined);
+        approvalResponse = client.respond(envelope.rpcId, { sessionId, approvalId: payload.approvalId, outcome: 'rejected' }, signal);
+        void approvalResponse.catch(() => undefined);
+        rejectTurnEnd(new DshRpcError('TOOL_ESCALATION_REQUIRED', 'The diagnostic session requested approval.'));
       }
       if (payload.type !== 'session/event' || payload.sessionId !== sessionId) return;
       const event = sessionEvent(payload.event);
@@ -668,7 +680,10 @@ export class ProviderDoctor {
       };
       if (!models.routable) throw new DshRpcError('MODEL_UNAVAILABLE', 'The current model route is not available.');
       const prompt = `Provider Doctor check. In the current workspace, create ${path.basename(sentinel)}, write exactly ${nonce}, read it back, and reply with exactly ${nonce}. Do not access any path outside the current workspace.`;
-      await client.call('session.prompt', { sessionId, content: [{ type: 'text', text: prompt }], mode: 'queue' }, 15_000, signal);
+      const prompted = await client.call<unknown>('session.prompt', { sessionId, content: [{ type: 'text', text: prompt }], mode: 'queue' }, 15_000, signal);
+      if (!isRecord(prompted) || prompted.accepted !== true) {
+        throw new DshRpcError('MALFORMED_RESPONSE', 'session.prompt did not accept the diagnostic turn');
+      }
       await turnEnded;
       if (approvalEscalated) throw new DshRpcError('TOOL_ESCALATION_REQUIRED', 'The diagnostic session requested approval.');
       const history = await client.call<unknown>('session.history', { sessionId, maxMessages: 200 }, 15_000, signal);
@@ -706,6 +721,7 @@ export class ProviderDoctor {
       outcome = { id: 'deep-tool-round-trip', status: 'fail', code, summary: safeFailureSummary(code), durationMs: Date.now() - started };
     } finally {
       signal.removeEventListener('abort', onAbort);
+      if (approvalResponse) await approvalResponse.catch(() => undefined);
       mux.close();
       deadline.dispose();
       if (sessionId) {

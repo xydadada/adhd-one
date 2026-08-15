@@ -40,6 +40,7 @@ interface ParsedSettingsFile {
   serialized: string;
   schemaVersion: 2 | 3;
   needsRewrite: boolean;
+  loadIssue?: SettingsLoadIssue;
 }
 
 type ReadSettingsResult =
@@ -70,9 +71,9 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return errorCode(error) === code;
 }
 
-type WorkspaceErrorCode = 'WORKSPACE_NOT_FOUND' | 'WORKSPACE_NOT_DIRECTORY';
+export type SettingsLoadIssue = 'WORKSPACE_NOT_FOUND' | 'WORKSPACE_NOT_DIRECTORY';
 
-function workspaceError(code: WorkspaceErrorCode): Error {
+function workspaceError(code: SettingsLoadIssue): Error {
   return new Error(code);
 }
 
@@ -159,13 +160,28 @@ function toV2(value: AppSettingsV3): AppSettingsV2 {
 }
 
 async function canonicalizeParsedSettings(file: ParsedSettingsFile): Promise<ParsedSettingsFile> {
-  const value = await canonicalizeSettings(file.value);
-  return {
-    value,
-    serialized: file.schemaVersion === 2 ? serializeSettings(toV2(value)) : serializeSettings(value),
-    schemaVersion: file.schemaVersion,
-    needsRewrite: file.schemaVersion === 2 || value.workspace !== file.value.workspace
-  };
+  try {
+    const value = await canonicalizeSettings(file.value);
+    return {
+      value,
+      serialized: file.schemaVersion === 2 ? serializeSettings(toV2(value)) : serializeSettings(value),
+      schemaVersion: file.schemaVersion,
+      needsRewrite: file.schemaVersion === 2 || value.workspace !== file.value.workspace
+    };
+  } catch (error) {
+    if (!isWorkspaceError(error)) throw error;
+    const value = { ...file.value };
+    delete value.workspace;
+    return {
+      value,
+      // Preserve the structurally valid original in quarantine; the repaired
+      // current file keeps every setting except the unavailable workspace.
+      serialized: file.serialized,
+      schemaVersion: file.schemaVersion,
+      needsRewrite: true,
+      loadIssue: error.message as SettingsLoadIssue
+    };
+  }
 }
 
 async function readSettingsFile(filename: string): Promise<ReadSettingsResult> {
@@ -528,6 +544,7 @@ async function moveToQuarantine(filename: string): Promise<void> {
       await rename(filename, candidate);
       return;
     } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) return;
       if (hasErrorCode(error, 'EEXIST')) continue;
       throw ioError();
     }
@@ -539,6 +556,7 @@ async function moveToQuarantine(filename: string): Promise<void> {
 export class SettingsStore {
   private value: AppSettingsV3 = defaultSettings();
   private queue: Promise<void> = Promise.resolve();
+  private loadIssue: SettingsLoadIssue | undefined;
   constructor(private readonly filename: string, private readonly legacyFilename?: string) {}
 
   async load(): Promise<AppSettingsV3> {
@@ -546,6 +564,33 @@ export class SettingsStore {
   }
 
   get(): AppSettings { return structuredClone(this.value); }
+
+  takeLoadIssue(): SettingsLoadIssue | undefined {
+    const issue = this.loadIssue;
+    this.loadIssue = undefined;
+    return issue;
+  }
+
+  async recoverCorrupt(): Promise<AppSettingsV3> {
+    return this.enqueue(async () => {
+      let recovered: AppSettingsV3 | undefined;
+      try {
+        recovered = await enqueueShared(this.filename, () => this.withWriterLock(async () => {
+          await moveToQuarantine(this.filename);
+          await moveToQuarantine(`${this.filename}.bak`);
+          const next = defaultSettings();
+          await writeFileAtomic(this.filename, serializeSettings(next));
+          return next;
+        }));
+      } catch (error) {
+        throw asSettingsError(error);
+      }
+      if (!recovered) throw ioError();
+      this.loadIssue = undefined;
+      this.value = structuredClone(recovered);
+      return this.get();
+    });
+  }
 
   async save(next: AppSettingsV2 | AppSettingsV3): Promise<void> {
     const valid = normalizeSettings(next);
@@ -598,9 +643,14 @@ export class SettingsStore {
 
   private async loadToDisk(): Promise<AppSettingsV3> {
     return this.withWriterLock(async () => {
+      this.loadIssue = undefined;
       const current = await readSettingsFile(this.filename);
       if (current.kind === 'valid') {
-        if (current.file.schemaVersion === 2 || current.file.needsRewrite) {
+        this.loadIssue = current.file.loadIssue;
+        if (current.file.loadIssue) {
+          await moveToQuarantine(this.filename);
+          await writeFileAtomic(this.filename, serializeSettings(current.file.value));
+        } else if (current.file.schemaVersion === 2 || current.file.needsRewrite) {
           await this.writeNextLocked(current.file.value, current);
         }
         return current.file.value;
@@ -608,7 +658,9 @@ export class SettingsStore {
 
       const backup = await readSettingsFile(`${this.filename}.bak`);
       if (backup.kind === 'valid') {
+        this.loadIssue = backup.file.loadIssue;
         if (current.kind === 'corrupt') await moveToQuarantine(this.filename);
+        if (backup.file.loadIssue) await moveToQuarantine(`${this.filename}.bak`);
         await writeFileAtomic(this.filename, serializeSettings(backup.file.value));
         return backup.file.value;
       }

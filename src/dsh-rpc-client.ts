@@ -21,6 +21,11 @@ const envelopeSchema = z.object({
   })
 });
 
+const receiptSchema = z.discriminatedUnion('accepted', [
+  z.object({ accepted: z.literal(true) }),
+  z.object({ accepted: z.literal(false), reason: z.enum(['not-pending', 'bad-response']) })
+]);
+
 function normalizeRemoteCode(code: unknown): string {
   return typeof code === 'string' && REMOTE_ERROR_CODES.has(code) ? code : 'RPC_FAILED';
 }
@@ -123,7 +128,9 @@ export class DshRpcClient {
 
     const socket = new WebSocket(url);
     let openSettled = false;
+    let openedSuccessfully = false;
     let closed = false;
+    let terminalReported = false;
     let resolveOpened!: () => void;
     let rejectOpened!: (reason?: unknown) => void;
     const opened = new Promise<void>((resolve, reject) => { resolveOpened = resolve; rejectOpened = reject; });
@@ -138,11 +145,29 @@ export class DshRpcClient {
       else if (socket.readyState === WebSocket.CLOSING) return;
       else socket.close();
     };
-    const onAbort = () => terminate(abortReason(externalSignal!));
-    const onOpen = () => finishOpen();
-    const onError = (error: unknown) => { if (!openSettled) finishOpen(error); };
+    const reportTerminal = (code: 'TRANSPORT' | 'STREAM_CLOSED', message: string) => {
+      if (closed || terminalReported) return;
+      terminalReported = true;
+      onProtocolError?.(new DshRpcError(code, message));
+    };
+    const onAbort = () => {
+      closed = true;
+      terminate(abortReason(externalSignal!));
+    };
+    const onOpen = () => {
+      openedSuccessfully = true;
+      finishOpen();
+    };
+    const onError = (error: unknown) => {
+      if (!openedSuccessfully) finishOpen(error);
+      else reportTerminal('TRANSPORT', 'Mux transport failed after opening.');
+    };
     const onClose = () => {
-      if (!openSettled) finishOpen(new Error('MUX_CLOSED_BEFORE_OPEN'));
+      const expected = closed;
+      externalSignal?.removeEventListener('abort', onAbort);
+      if (!openedSuccessfully) finishOpen(new DshRpcError('STREAM_CLOSED', 'Mux closed before opening.'));
+      else if (!expected) reportTerminal('STREAM_CLOSED', 'Mux closed before the diagnostic turn completed.');
+      closed = true;
       socket.removeListener('error', onError);
       socket.removeListener('close', onClose);
     };
@@ -197,6 +222,15 @@ export class DshRpcClient {
         signal: request.signal
       }), request.signal);
       if (!response.ok) throw new DshRpcError(`HTTP_${response.status}`, `respond returned HTTP ${response.status}`);
+      let raw: unknown;
+      try { raw = await abortable(response.json(), request.signal); }
+      catch (error) {
+        if (request.signal.aborted) throw error;
+        throw new DshRpcError('MALFORMED_RESPONSE', 'respond returned malformed JSON');
+      }
+      const receipt = receiptSchema.safeParse(raw);
+      if (!receipt.success) throw new DshRpcError('MALFORMED_RESPONSE', 'respond returned an invalid receipt');
+      if (!receipt.data.accepted) throw new DshRpcError('DSH_PROTOCOL_INCOMPATIBLE', 'respond rejected the pending approval response');
     } finally {
       request.dispose();
     }

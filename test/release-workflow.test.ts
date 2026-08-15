@@ -5,6 +5,18 @@ import { describe, expect, it } from 'vitest';
 const workflowPath = path.resolve('.github', 'workflows', 'release.yml');
 
 describe('release workflow identity gates', () => {
+  it('rejects SemVer build metadata while accepting standard prerelease tags', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const patterns = [...workflow.matchAll(/\$vSemVerPattern = '([^'\r\n]+)'/gu)].map((match) => match[1]);
+
+    expect(patterns).toHaveLength(2);
+    for (const pattern of patterns) {
+      const releaseTagPattern = new RegExp(pattern, 'u');
+      expect(releaseTagPattern.test('v1.2.3+build.1')).toBe(false);
+      expect(releaseTagPattern.test('v1.2.3-beta.1')).toBe(true);
+    }
+  });
+
   it('uses pinned Node 24 artifact download and attestation actions', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow.match(/actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)).toHaveLength(1);

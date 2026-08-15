@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
+  auditScopedProcesses,
   cdpClosed,
   hasObservedProcessTree,
   isValidCdpWebSocketUrl,
@@ -175,6 +176,32 @@ describe('packaged E2E evidence safety', () => {
 
     expect(scopedProcessKind(item, new Map(), scope)).toBeUndefined();
     expect(scopedProcessKind({ ...item, commandLine: `${item.commandLine} ${scope.commandMarkers.join(' ')}` }, new Map(), scope)).toBe('launch-executable');
+  });
+
+  it('keeps a full process snapshot timeout through the end of the observation window', async () => {
+    let now = 0;
+    const snapshotBudgets: number[] = [];
+    const result = await auditScopedProcesses({
+      startedAt: 0,
+      rootPid: 100,
+      knownProcesses: [],
+      executablePaths: [],
+      tempRoots: [],
+      commandMarkers: []
+    }, {
+      observationMs: 101,
+      snapshotTimeoutMs: 10_000,
+      pollIntervalMs: 100,
+      now: () => now,
+      delay: async (milliseconds: number) => { now += milliseconds; },
+      readProcesses: async (timeoutMs: number) => {
+        snapshotBudgets.push(timeoutMs);
+        return [];
+      }
+    });
+
+    expect(result).toEqual({ verified: true, pids: [], kinds: [] });
+    expect(snapshotBudgets).toEqual([10_000, 10_000, 10_000]);
   });
 
   it('keeps workspace-write evidence to booleans and enums', () => {

@@ -6,4 +6,8 @@ The application does not collect telemetry. Provider credentials remain owned by
 
 Unsigned releases must be verified against `SHA256SUMS.txt` or with GitHub Artifact Attestations. Runtime and application updates fail closed when verification is unavailable.
 
+Release and Runtime archives are authenticated before extraction, and candidates are checked in staging before an atomic slot switch. The extracted A/B slots and `runtime-state.json` live under the signed-in user's writable profile. A same-user or administrator compromise is outside this trust boundary: startup registration checks detect metadata/closure damage but are not a tamper-proof signature over every extracted file. Reinstall from a verified release to re-establish trust.
+
+The current hardening revision has source/static qualification only. Clean Windows 11 behavior, installer/upgrade behavior, SmartScreen, path compatibility and performance are explicitly unverified.
+
 DeepSeek Harness can execute tools and modify workspace files. Select the narrowest workspace needed and review every request to expand access.

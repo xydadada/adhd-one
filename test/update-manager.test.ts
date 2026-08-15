@@ -109,6 +109,8 @@ describe('runtime manifest', () => {
     expect(isRuntimeUpgrade('0.0.9', '0.1.0')).toBe(false);
     expect(selectRuntimeInstallSlots({ active: 'A', healthy: true })).toEqual({ slot: 'B', previous: 'A' });
     expect(selectRuntimeInstallSlots({ active: 'A', previous: 'B', healthy: false })).toEqual({ slot: 'A', previous: 'B' });
+    expect(selectRuntimeInstallSlots({ active: 'A', previous: 'B' })).toEqual({ slot: 'A', previous: 'B' });
+    expect(selectRuntimeInstallSlots({ active: 'A', previous: 'A', healthy: false })).toEqual({ slot: 'A', previous: 'bundled' });
     expect(selectRuntimeInstallSlots({ active: 'A', previous: 'B', healthy: true, candidate: true })).toEqual({ slot: 'A', previous: 'B' });
     expect(selectRuntimeInstallSlots({ active: 'bundled', previous: 'B', healthy: true })).toEqual({ slot: 'A', previous: 'bundled' });
   });

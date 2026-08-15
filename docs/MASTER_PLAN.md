@@ -9,7 +9,7 @@
 - 副标题：`Desktop for DeepSeek Harness`
 - 定位：非官方社区 Windows 桌面客户端
 - appId：`io.github.xydadada.adhd`
-- 目标平台：Windows 11 x64（当前尚未完成验证；Q4 仍为 0 分，Windows Server 2025 CI 不等同于 Windows 11）
+- 目标平台：Windows 11 x64。按项目所有者 2026-08-15 的决定，v0.2.0 以源码审计、类型检查、单元/集成测试和发布元数据静态校验为放行口径；干净 Windows 11、性能、SmartScreen 与真实安装体验明确标为“未验证”，不再作为本版本阻断门槛。
 - Runtime：未修改的 `@deepseek-ai/dsh@0.1.0-rc.6`
 - 默认关闭 DSH 遥测；ADHD One 不收集遥测，不上传工作区、会话、日志或 Provider 配置。
 - Stable 可以无代码签名，但必须提供 SHA-256、SPDX SBOM、GitHub Artifact Attestation、可离线证明和醒目的 SmartScreen 警告。
@@ -19,23 +19,25 @@
 
 ## 2. 进度口径与当前基线
 
-进度采用固定 100 分的验证加权口径：代码、自动化测试以及该项目要求的打包后验证全部通过后，才能取得对应分值；代码已写但未验证只标记为“部分完成”，不增加剩余分值。每次合并后必须在本文档记录 commit、测试命令、CI run 和验证证据。
+进度采用固定 90 分的静态实施口径。只有源码、类型、单元/集成测试、工作流和发布元数据可以计分；真实安装、干净 Windows 11、性能、SmartScreen、中文用户名和长路径属于独立的“经验验证”栏，不计入 90 分，也不能被描述成已经通过。每次合并后记录 commit、静态命令和可用 CI 证据。
 
-发布门槛：`v0.2.0-beta.2` 至少 78%，`v0.2.0-rc.1` 至少 94%，`v0.2.0` Stable 必须 100%。
+发布门槛：Stable 要求静态实施项达到 90/90，或对未完成项给出醒目的已知限制；不得用“理论正确”替代真实兼容性或性能声明。
 
 当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 和 `v0.2.0-beta.2` 均为 prerelease；`v0.2.0-beta.2` 已于 2026-08-15 发布，11 个 Release API 上传资产可公开下载（GitHub 另提供自动生成的源码归档）；`v0.2.0` Stable 尚未发布。
 
-当前验证进度：**85%**（U1 +2、U2 +2、U3 +2）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe` 的 Windows Server 2025 run `31870530357` 已让最终安装 EXE 从真实存在但版本不匹配的 slot B 回滚到 bundled，并在 ready 时与正常退出后都通过严格证据校验，因此 U3 取得最后 1 分。真实 electron-updater GitHub provider 的 loopback feed、Stable/Preview fallback、SHA-512 成功与失败路径也在同一 run 通过，但真实已发布资产的 attestation 与重启安装、Stable 发布、干净 Windows 11 和性能结果仍未计入。
+当前静态实施进度：**90/90（100%）**。本轮已补齐 STARTUPINFOEX 原子 Job/受限句柄继承、Runtime 异常收敛与 intent 竞态、严格 supervisor 首帧与字节级帧上限、Doctor 工具/结果/角色/审批验证、应用更新候选 generation 绑定与确认期串行化、attestation predicate、A/B 自回滚拒绝、损坏设置/失效工作区恢复、可重试 `.dsh` 导入、Portable 显式数据目录选择，以及最终闭包 SBOM 路径。静态实施口径已经完成；真实机器、安装器、SmartScreen、性能和真实 Provider 仍明确未验证。
 
-最新本地证据：`npm run check` 通过 29 个 test files（327 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 25 个直接执行或打包的 JS-family 文件；`npm run e2e:updater-feed` 输出 `UPDATER_FEED_E2E_OK`；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。Runtime journal 的目录发布会对 Windows `EPERM`、`EBUSY`、`EACCES` 短暂共享冲突执行有界退避，并在每次重试前重新验证 reparse 安全边界；其他错误仍立即 fail closed。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
+本轮只允许运行 `npm run check`、定向 Vitest、TypeScript、JavaScript syntax、workflow 静态审计和 `git diff --check`；不运行 Electron、DSH、安装包、VM、性能或网络 Provider 实测。历史 Windows Server 2025 证据保留作为旧提交记录，但不证明本轮代码或 Windows 11 行为。
 
-2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
+### 历史经验验证记录（不计入当前 90 分）
 
-同日 run `31827138503`（commit `8927f7a`）的 Quality 通过，但 Windows verification 在 `npm run check` 阶段失败：15 个 evidence verifier 用例都把 runner 临时目录判为 `EVIDENCE_DIRECTORY_INVALID`，因此 build、installed 和 Portable job 未执行。该结果只证明 Windows runner 路径规范化存在兼容性缺口，不是应用或 Harness 回归，也不计入 Q3。
+2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。该 run 总结论为 failure。该 Server 结果不得作为本轮、Windows 11 或性能证据。
 
-随后 run `31828488370`（commit `03d5d2b`）通过 Quality、build、Fuse、精确 Windows 资产校验和 Portable E2E。安装版首个 launch 达到 ready、退出码为 0，Runtime 与已知进程树均清空，但五秒最终路径审计仍发现 1 个新进程；清理阶段又遇到 NSIS key 在枚举后被删除的注册表竞态，导致 summary 未落盘。该 run 仍为 failure、Q3 仍为 0；当前修复把 Electron hard-exit 后备从 250ms 调整为 1 秒，并只忽略已经实际消失的 registry key。
+同日 run `31827138503`（commit `8927f7a`）的 Quality 通过，但 Windows verification 在 `npm run check` 阶段失败：15 个 evidence verifier 用例都把 runner 临时目录判为 `EVIDENCE_DIRECTORY_INVALID`，因此 build、installed 和 Portable job 未执行。该结果只证明当时 Windows runner 路径规范化存在兼容性缺口。
 
-2026-08-15 commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 与 Windows Server 2025 run `31857910840` 全绿。`quality`、`codeql`、`build-windows`、`portable-e2e`、`installed-e2e` 与 `test-and-package` 均为 success；安装版 launch、force-kill、workspace-write 和十次启动共 13/13 循环通过，卸载后安装目录、应用范围进程、注册表和快捷方式均清理。unpacked 与最终 Portable ZIP evidence 均通过严格 verifier；workspace-write 证明 `packaged-asar` RPC、`workspace-write` 权限、mock 鉴权、PowerShell tool-call、工具结果、第二轮 Provider、最终 nonce 和 Session 归档。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。Q3 因此取得 5 分；该 Server 结果仍不得作为 Windows 11 或性能证据。
+随后 run `31828488370`（commit `03d5d2b`）通过 Quality、build、Fuse、精确 Windows 资产校验和 Portable E2E。安装版首个 launch 达到 ready、退出码为 0，Runtime 与已知进程树均清空，但五秒最终路径审计仍发现 1 个新进程；清理阶段又遇到 NSIS key 在枚举后被删除的注册表竞态，导致 summary 未落盘。该 run 仍为 failure；当时的修复把 Electron hard-exit 后备从 250ms 调整为 1 秒，并只忽略已经实际消失的 registry key。
+
+2026-08-15 commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 与 Windows Server 2025 run `31857910840` 全绿。`quality`、`codeql`、`build-windows`、`portable-e2e`、`installed-e2e` 与 `test-and-package` 均为 success；安装版 launch、force-kill、workspace-write 和十次启动共 13/13 循环通过，卸载后安装目录、应用范围进程、注册表和快捷方式均清理。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。该旧提交的 Server 套件通过，但不计入当前静态分数，也不得作为当前源码、Windows 11 或性能证据。
 
 `v0.2.0-beta.2` tag 的 release run `31859638726` 已完成构建、E2E、SBOM、摘要和 attestation，但原 workflow 在 draft 阶段错误地通过 tag endpoint 回读不可见的草稿，导致最终 job 标红；资产经 release ID 严格核对后发布。main commit `0e85253da21067e680ef6178f735d5736e2fcdaa` 已改为按 release ID 回读，Quality run `31860658337` 与 Windows verification run `31860658340` 全绿；该 Release workflow 修复仍须由下一次 tag 完成端到端验证后才能记为发布门禁证据。
 
@@ -43,26 +45,26 @@
 |---|---|---:|---:|
 | R1 | Windows launcher、Job、隐藏控制台 | 8 | 8 |
 | R2 | 生命周期、退出、崩溃恢复 | 6 | 6 |
-| R3 | Supervisor 双向控制通道 | 5 | 4 |
+| R3 | Supervisor 双向控制通道 | 5 | 5 |
 | R4 | readiness、端口、Runtime 隔离 | 6 | 6 |
 | D1 | ControlWindow、托盘、通知 | 5 | 5 |
 | D2 | Quick Provider Doctor | 4 | 4 |
-| D3 | Deep Provider Doctor | 7 | 5 |
-| D4 | 首次启动、迁移、错误 UX | 4 | 3 |
-| U1 | 应用更新 | 5 | 3 |
+| D3 | Deep Provider Doctor | 7 | 7 |
+| D4 | 首次启动、迁移、错误 UX | 4 | 4 |
+| U1 | 应用更新 | 5 | 5 |
 | U2 | Runtime 下载与验证 | 6 | 6 |
 | U3 | Runtime A/B 与回滚 | 6 | 6 |
-| U4 | 供应链与 Release 证明 | 3 | 2 |
+| U4 | 供应链与 Release 证明 | 3 | 3 |
 | S1 | 原子设置与恢复 | 4 | 4 |
 | S2 | AppData、Portable、旧数据迁移 | 4 | 4 |
-| S3 | 安装、升级、快捷方式 | 2 | 1 |
+| S3 | 安装、升级、快捷方式 | 2 | 2 |
 | Q1 | 单元测试 | 5 | 5 |
-| Q2 | 集成和故障 fixture | 5 | 4 |
-| Q3 | 打包后自动 E2E | 5 | 5 |
-| Q4 | Windows 11、性能、兼容性 | 5 | 0 |
+| Q2 | 集成和故障 fixture | 5 | 5 |
 | P1 | 品牌、仓库、Beta 发布基础 | 3 | 3 |
-| P2 | 准确文档、兼容矩阵、推广 | 2 | 1 |
-| **总计** |  | **100** | **85** |
+| P2 | 准确文档、兼容矩阵、推广 | 2 | 2 |
+| **静态实施总计** |  | **90** | **90** |
+
+经验验证（不计分）：历史 Windows Server 2025 打包测试曾通过；当前源码未在干净 Windows 11、真实安装/升级、中文用户名、长路径、SmartScreen 或性能条件下重新验证。
 
 ## 3. Reuse Gate：不重复造轮子
 
@@ -118,7 +120,7 @@
 
 固定上游：`deepseek-ai/DeepSeek-Harness@47f943859bef60e4160492346772ded9b24f765a`。
 
-最小改编范围：Windows 参数转义、Win32 ABI 常量和结构、`Create suspended → assign Job → resume`、`CreatePipe`/`SetHandleInformation`/`PeekNamedPipe`/`ReadFile`、失败路径终止和 handle cleanup、atomic write、writer lock、RPC envelope、mux event 类型和 approval response schema。官方 `@deepseek-ai/dsh-llm-mock-server@0.1.0-rc.6` 直接作为测试依赖使用。
+最小改编范围：Windows 参数转义、Win32 ABI 常量和结构、`CreatePipe`/`SetHandleInformation`/`PeekNamedPipe`/`ReadFile`、失败路径终止和 handle cleanup、atomic write、writer lock、RPC envelope、mux event 类型和 approval response schema。进程创建不再复用“先创建 suspended 再分配 Job”的竞态方案，而按 Microsoft Win32 指引使用 `STARTUPINFOEX` 的 Job/handle attribute list。官方 `@deepseek-ai/dsh-llm-mock-server@0.1.0-rc.6` 直接作为测试依赖使用。
 
 ### 3.3 社区项目
 
@@ -195,7 +197,7 @@ Runtime 状态保持：`idle → preparing → starting → ready → stopping`�
 
 不再开发命名管道 DACL 或 native addon。使用 Koffi 创建 parent→supervisor 和 supervisor→parent 两组匿名管道；只让 supervisor 端 handle 继承，supervisor stdin 接收命令，stdout 输出状态 JSON Lines，日志直接写脱敏文件。
 
-启动顺序固定：创建 Job Object 并启用 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；`CreateProcessW` 使用 `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT`，配合 `STARTF_USESHOWWINDOW + SW_HIDE`；先 `AssignProcessToJobObject`，成功后 `ResumeThread`。Job 或 Resume 失败时显式终止 suspended 进程、关闭所有句柄，禁止降级为未托管运行。
+启动顺序固定：创建 Job Object 并启用 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`；构造 `STARTUPINFOEX`，用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在 `CreateProcessW` 成功时原子加入 Job，并用 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 只允许继承 supervisor stdin/stdout 两个 handle；创建 flags 保留 `CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT`，配合 `STARTF_USESHOWWINDOW + SW_HIDE`。属性、创建、终止、等待或句柄关闭失败均显式报错，禁止降级为未托管运行。
 
 管道帧为 UTF-8 JSON Lines，单帧上限 64 KiB；消息携带并校验版本、nonce、generation 和 PID。读取端复用官方 `PeekNamedPipe`/`ReadFile` 模式，低频轮询并在有消息时排空，停止后取消 timer。匿名管道不开放网络控制接口。
 
@@ -337,12 +339,7 @@ npm run audit:signatures
 
 `smoke:runtime-update` 直接消费发布用 `vendor/dsh-runtime.7z`，经过真实列表、解压树、PE/依赖闭包、Runtime staging Session/tool-call smoke 和 A/B journal 提交；Windows 与 Release workflow 都在共享构建完成后执行该门禁。
 
-后续阶段待新增（当前不可执行）：
-
-| npm 命令 | 用途 |
-|---|---|
-| `npm run fixture:update-server` | 更新服务 fixture |
-| `npm run verify:attestations` | Release attestation 验证 |
+更新服务故障由现有 Vitest fixture 覆盖；Release attestation 由固定 SHA 的 `release.yml` 和 `gh attestation verify` 路径验证，不再维护一套重复的本地包装命令。
 
 完成标准：Stable 不安装 prerelease；Preview 能看到 beta/rc；坏 manifest、摘要、证明或 archive 全部 fail closed；RuntimeController 实际从 healthy A/B 槽启动；Provider 错误不触发 Runtime 回滚。
 
@@ -355,7 +352,7 @@ npm run test:doctor
 npm run check
 ```
 
-当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 29 个 test files（327 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
+当前静态核验结果：`npm run check` 为 36 个 test files（448 个通过、1 个 Windows 8.3 alias 回归跳过），JavaScript syntax 覆盖 31 个文件，TypeScript 无错误。旧 Portable EXE 的 mock PowerShell 结果仅作历史记录。
 
 后续阶段待新增（当前不可执行）：
 
@@ -366,7 +363,7 @@ npm run check
 
 上述门槛已经满足，`v0.2.0-beta.2` 已发布；后续 RC/Stable 不得回退这些验证门槛。
 
-### 阶段 D：打包后自动 E2E，78% → 89%
+### 阶段 D：历史打包后自动 E2E（当前修订不重复运行）
 
 GitHub `windows-2025` 构建一次并复用产物。workflow 对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write、Runtime 坏候选回滚和十次启动，共 14 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe` 的 run `31870530357` 已通过完整 14 循环、严格 evidence verifier、Portable 和总门禁。这不包含阶段 E 的 Windows 11 与性能资格。
 
@@ -380,9 +377,9 @@ npm run e2e:packaged -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evi
 
 失败时保留脱敏日志、Playwright trace、Runtime snapshot、进程树、安装路径清单、性能和包体报告。
 
-### 阶段 E：真实 Windows 11 与 RC，89% → 94%
+### 阶段 E：可选的真实 Windows 11 经验验证（不阻断 v0.2.0）
 
-GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干净 Windows 11 x64 VM 执行同一套脚本。VM 不安装系统 Node/npm/pnpm；测试启动环境剥离继承的宿主工具链 PATH，仅保留 Windows System32 供 PowerShell 等必要系统工具使用；覆盖中文用户名、空格路径、长路径、只读 workspace、崩溃、离线、配置损坏、更新中断和 A/B 坏槽。不得把 Server 结果描述成 Windows 11 结果。
+这些脚本保留给后续自愿验证，但项目所有者已决定本版本不实际执行。任何未来结果都必须绑定准确 commit/EXE digest；不得把 Server 结果描述成 Windows 11 结果，也不得在未运行时写成通过。
 
 当前可执行：
 
@@ -395,11 +392,11 @@ GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干�
 
 已实现本地汇总闭环：qualification 在启动前哈希实际 EXE，安装脚本在 qualification 结束且卸载前再次哈希并要求 digest 一致，再把严格校验后的性能/零残留、host proof 和 EXE proof 汇总为路径无关的 `win11-evidence.json`。仍未闭环的是把完整安装套件、四行路径矩阵及这些证据绑定到签名/attestation；本地 JSON 不能单独作为 Stable 证明。
 
-RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 秒，空闲 CPU <1%，退出五秒内 Job 活动进程为零，中文用户名和干净 VM 全通过。达到 94% 后才发布 `v0.2.0-rc.1`。
+目标指标仍保留为未来经验验证标准：Setup ≤145 MiB、首次可交互 ≤15 秒、热启动 ready ≤8 秒、空闲 CPU <1%、退出五秒内 Job 活动进程为零，以及中文用户名/干净 VM 兼容；当前全部标记“未验证”。
 
-### 阶段 F：Stable，94% → 100%
+### 阶段 F：静态放行与 Stable，90/90（源码门槛已完成）
 
-修正中英文 README，清理未使用依赖，生成 notices、SBOM、摘要、attestation bundle、trusted root snapshot 和 Windows 11 evidence；检查 tag、package version、资产名和 manifest 一致；发布 unsigned 警告和校验命令；Stable 后再提交 Showcase、awesome PR、WinGet/Scoop。
+修正中英文 README，清理未使用依赖，生成 notices、最终 unpacked closure 的 SBOM、摘要、attestation bundle 和 trusted root snapshot；检查 tag、package version、资产名和 manifest 一致；发布 unsigned 与“未做真实 Windows 11/性能验证”警告。Windows 11 evidence 不再是硬门槛；没有证据时不得生成或上传伪 evidence。Stable 后再提交 Showcase、awesome PR、WinGet/Scoop。
 
 `v0.2.0` Stable 的目标资产（不是当前 Stable `v0.1.0` 的下载清单）：
 
@@ -411,7 +408,7 @@ RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 
 - SPDX SBOM
 - `THIRD_PARTY_NOTICES.md`
 - attestation bundle
-- Windows 11 evidence
+- 可选的 Windows 11 evidence（仅在真实执行并通过时提供）
 - 中英文 Release Notes
 
 ## 9. 打包、CI 与发布
@@ -426,7 +423,7 @@ Release workflow 为发布资产生成 SHA-256 与 SPDX SBOM；npm signatures �
 
 单元测试覆盖状态机、generation、Windows 参数、URL/path、manifest、archive entry、settings recovery 和报告脱敏；集成测试覆盖匿名双管道、Job 调用顺序、退出协调、restart cancellation、流式下载、A/B 回滚、Doctor mux 状态机和官方 mock server 故障类型。
 
-当前自动化打包后测试覆盖 Setup、Portable、空 PATH、PowerShell、workspace-write、tool-call、十次启停、显式强杀和应用范围内无残留进程；workspace-write 遇到意外 approval 会失败，不渲染或自动批准 UI。中文用户名/长路径、真实 approval 批准与拒绝、非测试性崩溃和更新中断仍属于 Windows 11 RC 验收项。Beta 发布前必须有 SHA-256、npm signatures、SPDX SBOM、licenses、GitHub attestation、offline bundle 和中英文说明；Windows 11 evidence 与性能证据是 `v0.2.0-rc.1`/Stable 的额外硬门槛。
+历史自动化打包测试曾覆盖 Setup、Portable、空 PATH、PowerShell、workspace-write、tool-call、十次启停、显式强杀和应用范围内无残留进程；它不证明当前未运行的新代码。当前放行仅要求 SHA-256、npm signatures、最终 unpacked closure 的 SPDX SBOM、licenses、GitHub attestation、offline bundle、中英文说明和静态检查；Windows 11 evidence 与性能证据可选，缺失时必须醒目标注“未验证”。
 
 ## 11. 最终统一规则
 

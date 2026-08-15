@@ -30,6 +30,20 @@ const identity = 'https://github.com/xydadada/adhd-one/.github/workflows/release
 
 let temporaryDirectories: string[] = [];
 
+function deferredPromise<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeManager(root: string, portable = false): UpdateManager {
   return new UpdateManager({
     staging: path.join(root, 'staging'),
@@ -53,27 +67,25 @@ async function makeAppAvailable(manager: UpdateManager): Promise<void> {
   await expect(manager.check('app', 'stable')).resolves.toMatchObject({ phase: 'available', candidateVersion: updateVersion, canConfirm: true, canInstall: false, rollback: false });
 }
 
-function mockSuccessfulAttestation(assetName: string, contents: Buffer): void {
+function mockSuccessfulAttestation(assetName: string, contents: Buffer, predicateType = 'https://in-toto.io/attestation/release/v0.1'): void {
   const digest = createHash('sha256').update(contents).digest('hex');
   sigstoreVerifyMock.mockResolvedValue({
     identity: { extensions: { issuer }, subjectAlternativeName: identity }
   });
-  fetchMock.mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      attestations: [{
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({
+    attestations: [{
         bundle: {
           dsseEnvelope: {
             payloadType: 'application/vnd.in-toto+json',
             payload: Buffer.from(JSON.stringify({
               _type: 'https://in-toto.io/Statement/v1',
+              predicateType,
               subject: [{ name: assetName, digest: { sha256: digest } }]
             })).toString('base64')
           }
         }
       }]
-    })
-  });
+  }), { status: 200 }));
 }
 
 function runtimeManifest(version: string): Record<string, unknown> {
@@ -260,5 +272,73 @@ describe('app updater P0 gates', () => {
     expect(() => manager.quitAndInstall()).not.toThrow();
     expect(updaterMock.quitAndInstall).toHaveBeenCalledOnce();
     expect(updaterMock.quitAndInstall).toHaveBeenCalledWith(false, true);
+  });
+
+  it('blocks a concurrent recheck and does not carry verification into the next candidate', async () => {
+    const root = await makeTemporaryDirectory();
+    const contents = Buffer.from('older-installer');
+    const filename = path.join(root, `ADHD-One-Setup-${updateVersion}-x64.exe`);
+    await writeFile(filename, contents);
+    const manager = makeManager(root);
+    await makeAppAvailable(manager);
+    mockSuccessfulAttestation(path.basename(filename), contents);
+    const download = deferredPromise<string[]>();
+    updaterMock.downloadUpdate.mockReturnValue(download.promise);
+
+    const olderConfirmation = manager.confirm('app');
+    expect(updaterMock.downloadUpdate).toHaveBeenCalledOnce();
+    expect(manager.snapshot('app')).toMatchObject({ phase: 'downloading', candidateVersion: updateVersion, canInstall: false });
+
+    const newerVersion = '0.4.0';
+    updaterMock.checkForUpdates.mockResolvedValue({ updateInfo: {
+      version: newerVersion,
+      tag: `v${newerVersion}`,
+      files: [{ url: `ADHD-One-Setup-${newerVersion}-x64.exe`, sha512: 'sha512' }]
+    } });
+    await expect(manager.check('app', 'stable')).rejects.toThrow('UPDATE_CONFIRM_IN_PROGRESS');
+    expect(manager.snapshot('app')).toMatchObject({ phase: 'downloading', candidateVersion: updateVersion, canInstall: false });
+    expect(() => manager.quitAndInstall()).toThrow('APP_UPDATE_NOT_VERIFIED');
+
+    download.resolve([filename]);
+    await expect(olderConfirmation).resolves.toBeUndefined();
+    expect(manager.snapshot('app')).toMatchObject({ phase: 'verified', candidateVersion: updateVersion, canInstall: true });
+
+    await expect(manager.check('app', 'stable')).resolves.toMatchObject({
+      phase: 'available', candidateVersion: newerVersion, canConfirm: true, canInstall: false
+    });
+    expect(manager.snapshot('app')).not.toHaveProperty('error');
+    expect(() => manager.quitAndInstall()).toThrow('APP_UPDATE_NOT_VERIFIED');
+    expect(updaterMock.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before Sigstore verification when the attestation response is oversized', async () => {
+    const root = await makeTemporaryDirectory();
+    const contents = Buffer.from('verified-installer');
+    const filename = path.join(root, `ADHD-One-Setup-${updateVersion}-x64.exe`);
+    await writeFile(filename, contents);
+    const manager = makeManager(root);
+    await makeAppAvailable(manager);
+    updaterMock.downloadUpdate.mockResolvedValue([filename]);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ padding: 'x'.repeat(4 * 1024 * 1024) }), { status: 200 }));
+
+    await expect(manager.confirm('app')).rejects.toThrow('MANIFEST_TOO_LARGE');
+    expect(manager.snapshot('app')).toMatchObject({ phase: 'failed', canInstall: false });
+    expect(sigstoreVerifyMock).not.toHaveBeenCalled();
+    expect(updaterMock.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a valid signature carries the wrong attestation predicate', async () => {
+    const root = await makeTemporaryDirectory();
+    const contents = Buffer.from('verified-installer');
+    const filename = path.join(root, `ADHD-One-Setup-${updateVersion}-x64.exe`);
+    await writeFile(filename, contents);
+    const manager = makeManager(root);
+    await makeAppAvailable(manager);
+    updaterMock.downloadUpdate.mockResolvedValue([filename]);
+    mockSuccessfulAttestation(path.basename(filename), contents, 'https://slsa.dev/provenance/v1');
+
+    await expect(manager.confirm('app')).rejects.toThrow('ATTESTATION_NOT_FOUND');
+    expect(manager.snapshot('app')).toMatchObject({ phase: 'failed', canInstall: false });
+    expect(updaterMock.quitAndInstall).not.toHaveBeenCalled();
   });
 });

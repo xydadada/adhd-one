@@ -53,6 +53,10 @@ const manifestSchema = z.object({
 const githubDownloadHosts = new Set(['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']);
 const runtimeProgressByteThreshold = 256 * 1024;
 const runtimeProgressTimeThresholdMs = 100;
+const attestationResponseLimit = 4 * 1024 * 1024;
+const attestationResponseSchema = z.object({
+  attestations: z.array(z.object({ bundle: z.unknown().optional() }).passthrough()).max(64).optional()
+}).passthrough();
 
 export function runtimeValidationEnvironment(nodePath: string, home: string): NodeJS.ProcessEnv {
   const systemRoot = process.env.SystemRoot ?? process.env.windir ?? 'C:\\Windows';
@@ -83,7 +87,11 @@ const runtimeStateSchema = z.object({
   version: z.string().optional(),
   healthy: z.boolean().optional(),
   candidate: z.boolean().optional()
-}).passthrough();
+}).passthrough().superRefine((value, context) => {
+  if ((value.active === 'A' || value.active === 'B') && value.previous === value.active) {
+    context.addIssue({ code: 'custom', message: 'runtime previous slot must differ from active slot' });
+  }
+});
 
 const runtimeStateFileName = 'runtime-state.json';
 const runtimeCommitJournalFileName = '.runtime-commit-journal.json';
@@ -165,10 +173,11 @@ export function isRuntimeUpgrade(candidate: string, current: string): boolean {
 
 export function selectRuntimeInstallSlots(current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean; candidate?: boolean }): { slot: 'A' | 'B'; previous: 'A' | 'B' | 'bundled' } {
   const activeSlot = current.active === 'A' || current.active === 'B' ? current.active : undefined;
-  const pendingCandidate = Boolean(activeSlot && (current.healthy === false || current.candidate === true));
+  const pendingCandidate = Boolean(activeSlot && (current.healthy !== true || current.candidate === true));
   const slot: 'A' | 'B' = pendingCandidate ? activeSlot! : activeSlot === 'A' ? 'B' : 'A';
+  const recordedPrevious = current.previous === activeSlot ? 'bundled' : current.previous ?? 'bundled';
   const previous = current.active === 'bundled' ? 'bundled'
-    : activeSlot && !pendingCandidate && current.healthy === true ? activeSlot : current.previous ?? 'bundled';
+    : activeSlot && !pendingCandidate && current.healthy === true ? activeSlot : recordedPrevious;
   return { slot, previous };
 }
 
@@ -198,13 +207,14 @@ async function verifyGithubAttestation(digest: string, tag: string, assetName: s
   const issuer = 'https://token.actions.githubusercontent.com';
   const identity = `https://github.com/xydadada/adhd-one/.github/workflows/release.yml@refs/tags/${tag}`;
   const response = await fetch(`https://api.github.com/repos/xydadada/adhd-one/attestations/sha256:${digest}`, {
+    redirect: 'error',
     headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }, signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) throw new Error(`ATTESTATION_HTTP_${response.status}`);
-  const body = await response.json() as { attestations?: Array<{ bundle?: Bundle }> };
+  const body = attestationResponseSchema.parse(await readJsonBounded(response, attestationResponseLimit));
   const escapedIdentity = identity.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   for (const entry of body.attestations ?? []) {
-    const bundle = entry.bundle;
+    const bundle = entry.bundle as Bundle | undefined;
     if (!bundle?.dsseEnvelope?.payload || bundle.dsseEnvelope.payloadType !== 'application/vnd.in-toto+json') continue;
     try {
       const signer = await verify(bundle, {
@@ -216,9 +226,11 @@ async function verifyGithubAttestation(digest: string, tag: string, assetName: s
       if (signer.identity?.extensions?.issuer !== issuer || signer.identity.subjectAlternativeName !== identity) continue;
       const statement = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, 'base64').toString('utf8')) as {
         _type?: unknown;
+        predicateType?: unknown;
         subject?: Array<{ name?: unknown; digest?: { sha256?: unknown } } | null>;
       };
       if (statement._type === 'https://in-toto.io/Statement/v1'
+        && statement.predicateType === 'https://in-toto.io/attestation/release/v0.1'
         && Array.isArray(statement.subject)
         && statement.subject.some(subject => subject?.digest?.sha256 === digest && typeof subject.name === 'string'
           && (subject.name === assetName || subject.name.replace(/\\/gu, '/').endsWith(`/${assetName}`)))) return;
@@ -236,10 +248,26 @@ interface UpdatePaths {
   packaged?: boolean;
 }
 
+interface AppUpdateCandidate {
+  readonly version: string;
+  readonly tag: string;
+  readonly assetName: string;
+  readonly generation: number;
+}
+
+interface RuntimeUpdateCandidate {
+  readonly manifest: RuntimeManifestV1;
+  readonly channel: 'stable' | 'preview';
+  readonly generation: number;
+}
+
+type UpdateCandidate = AppUpdateCandidate | RuntimeUpdateCandidate;
+
 export class UpdateManager extends EventEmitter {
   private snapshots: Map<UpdateTarget, UpdateSnapshotV2>;
-  private appCandidate?: { version: string; tag: string; assetName: string; generation: number };
-  private runtimeCandidate?: { manifest: RuntimeManifestV1; channel: 'stable' | 'preview'; generation: number };
+  private appCandidate?: AppUpdateCandidate;
+  private runtimeCandidate?: RuntimeUpdateCandidate;
+  private verifiedAppCandidate?: AppUpdateCandidate;
   private confirming = new Set<UpdateTarget>();
   private checkGenerations = new Map<UpdateTarget, number>();
   constructor(
@@ -263,9 +291,26 @@ export class UpdateManager extends EventEmitter {
     const next = { ...this.snapshot(target), ...patch } as UpdateSnapshotV2;
     for (const key of ['candidateVersion', 'receivedBytes', 'totalBytes', 'error'] as const) if (key in patch && patch[key] === undefined) delete next[key];
     next.canConfirm = next.phase === 'available';
-    next.canInstall = target === 'app' && !this.portable && next.phase === 'verified';
+    const appCandidate = this.appCandidate;
+    next.canInstall = target === 'app' && !this.portable && next.phase === 'verified'
+      && appCandidate !== undefined && this.verifiedAppCandidate === appCandidate
+      && appCandidate.generation === this.checkGenerations.get('app') && next.candidateVersion === appCandidate.version;
     if (patch.rollback !== undefined) next.rollback = patch.rollback;
     this.snapshots.set(target, next); this.emit('changed', next);
+  }
+  private isCurrentConfirmation(target: UpdateTarget, generation: number | undefined, candidate: UpdateCandidate | undefined): boolean {
+    if (generation === undefined || candidate === undefined || candidate.generation !== generation
+      || this.checkGenerations.get(target) !== generation) return false;
+    const snapshot = this.snapshot(target);
+    if (target === 'app') {
+      const appCandidate = candidate as AppUpdateCandidate;
+      return this.appCandidate === appCandidate && snapshot.candidateVersion === appCandidate.version;
+    }
+    const runtimeCandidate = candidate as RuntimeUpdateCandidate;
+    return this.runtimeCandidate === runtimeCandidate && snapshot.candidateVersion === runtimeCandidate.manifest.runtime.version;
+  }
+  private assertCurrentConfirmation(target: UpdateTarget, generation: number | undefined, candidate: UpdateCandidate | undefined): void {
+    if (!this.isCurrentConfirmation(target, generation, candidate)) throw new Error('UPDATE_CONFIRM_STALE');
   }
   private async recoverRuntimeCommitIfPresent(): Promise<void> {
     const journalPath = path.join(this.paths.runtimes, runtimeCommitJournalFileName);
@@ -285,9 +330,10 @@ export class UpdateManager extends EventEmitter {
     });
   }
   async check(target: UpdateTarget, channel: UpdateChannel): Promise<UpdateSnapshotV2> {
+    if (this.confirming.has(target)) throw new Error('UPDATE_CONFIRM_IN_PROGRESS');
     const generation = (this.checkGenerations.get(target) ?? 0) + 1;
     this.checkGenerations.set(target, generation);
-    if (target === 'app') delete this.appCandidate;
+    if (target === 'app') { delete this.appCandidate; delete this.verifiedAppCandidate; }
     if (target === 'runtime') delete this.runtimeCandidate;
     this.set(target, {
       channel,
@@ -320,10 +366,13 @@ export class UpdateManager extends EventEmitter {
         if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
         this.set(target, runtimeStatus);
         const manifestUrl = await resolveRuntimeManifestUrl(this.manifestUrl, channel);
+        if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
         if (!manifestUrl) { this.set(target, { phase: 'idle' }); return this.snapshot(target); }
         const response = await fetchGithub(manifestUrl, AbortSignal.timeout(10_000));
+        if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
         if (!response.ok || Number(response.headers.get('content-length') ?? 0) > 1_048_576) throw new Error(`MANIFEST_HTTP_${response.status}`);
         const rawManifest = await readJsonBounded(response, 1_048_576);
+        if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
         const advertisedChannel = z.object({ channel: z.enum(['stable', 'preview']) }).parse(rawManifest).channel;
         if (advertisedChannel !== channel) { this.set(target, { phase: 'idle' }); return this.snapshot(target); }
         const manifest = parseRuntimeManifest(rawManifest, channel, this.appVersion);
@@ -337,37 +386,48 @@ export class UpdateManager extends EventEmitter {
   }
   async confirm(target: UpdateTarget): Promise<void> {
     if (this.confirming.has(target)) throw new Error('UPDATE_CONFIRM_IN_PROGRESS');
+    const generation = this.checkGenerations.get(target);
+    const candidate: UpdateCandidate | undefined = target === 'app' ? this.appCandidate : this.runtimeCandidate;
     this.confirming.add(target);
     let runtimePart: string | undefined;
     try {
-    if (target === 'runtime') await this.recoverRuntimeCommitIfPresent();
     if (this.snapshot(target).phase !== 'available') throw new Error('UPDATE_NOT_AVAILABLE');
+    if (!this.isCurrentConfirmation(target, generation, candidate)) {
+      throw new Error(target === 'app' ? 'APP_UPDATE_METADATA_MISSING' : 'RUNTIME_MANIFEST_MISSING');
+    }
+    const awaitCurrent = async <T>(operation: Promise<T>): Promise<T> => {
+      const result = await operation;
+      this.assertCurrentConfirmation(target, generation, candidate);
+      return result;
+    };
+    if (target === 'runtime') await awaitCurrent(this.recoverRuntimeCommitIfPresent());
     if (target === 'app') {
       if (this.portable) throw new Error('PORTABLE_UPDATE_DOWNLOAD_ONLY');
-      const candidate = this.appCandidate;
-      if (!candidate || candidate.generation !== this.checkGenerations.get('app')
-        || this.snapshot('app').candidateVersion !== candidate.version) throw new Error('APP_UPDATE_METADATA_MISSING');
+      const appCandidate = candidate as AppUpdateCandidate;
+      delete this.verifiedAppCandidate;
       this.set(target, { phase: 'downloading' });
-      const result = await this.appUpdater.downloadUpdate();
+      const result = await awaitCurrent(this.appUpdater.downloadUpdate());
       const filename = result[0]; if (!filename) throw new Error('UPDATE_FILE_MISSING');
-      if (path.basename(filename) !== candidate.assetName) throw new Error('UPDATE_ASSET_NAME_MISMATCH');
+      if (path.basename(filename) !== appCandidate.assetName) throw new Error('UPDATE_ASSET_NAME_MISMATCH');
       const assetName = path.basename(filename);
-      const digest = await sha256(filename);
-      await verifyGithubAttestation(digest, candidate.tag, assetName);
+      const digest = await awaitCurrent(sha256(filename));
+      await awaitCurrent(verifyGithubAttestation(digest, appCandidate.tag, assetName));
+      this.assertCurrentConfirmation(target, generation, candidate);
+      this.verifiedAppCandidate = appCandidate;
       this.set(target, { phase: 'verified' }); return;
     }
-    const candidate = this.runtimeCandidate;
-    if (!candidate || candidate.generation !== this.checkGenerations.get('runtime') || this.snapshot('runtime').candidateVersion !== candidate.manifest.runtime.version) throw new Error('RUNTIME_MANIFEST_MISSING');
-    const manifest = candidate.manifest; await mkdir(this.paths.staging, { recursive: true });
-    const part = path.join(this.paths.staging, `${manifest.asset.name}.part`); await rm(part, { force: true });
+    const runtimeCandidate = candidate as RuntimeUpdateCandidate;
+    const manifest = runtimeCandidate.manifest; await awaitCurrent(mkdir(this.paths.staging, { recursive: true }));
+    const part = path.join(this.paths.staging, `${manifest.asset.name}.part`); await awaitCurrent(rm(part, { force: true }));
     runtimePart = part;
     this.set(target, { phase: 'downloading', receivedBytes: 0, totalBytes: manifest.asset.size });
-    const response = await fetchGithub(manifest.asset.url, AbortSignal.timeout(120_000));
+    const response = await awaitCurrent(fetchGithub(manifest.asset.url, AbortSignal.timeout(120_000)));
     if (!response.ok || !response.body) throw new Error(`RUNTIME_DOWNLOAD_HTTP_${response.status}`);
     const digest = createHash('sha256'); let size = 0;
     let lastReportedBytes = 0;
     let lastReportedAt = Date.now();
     const reportProgress = (receivedBytes: number, force = false): void => {
+      if (!this.isCurrentConfirmation(target, generation, candidate)) return;
       const now = Date.now();
       if (!force && receivedBytes - lastReportedBytes < runtimeProgressByteThreshold && now - lastReportedAt < runtimeProgressTimeThresholdMs) return;
       if (receivedBytes === lastReportedBytes) return;
@@ -375,27 +435,32 @@ export class UpdateManager extends EventEmitter {
       lastReportedBytes = receivedBytes;
       lastReportedAt = now;
     };
-    const handle = await open(part, 'wx');
+    const handle = await awaitCurrent(open(part, 'wx'));
     try {
       const meter = new Transform({ transform: (chunk: Buffer, _encoding, callback) => {
         size += chunk.length;
         if (size > manifest.asset.size) { callback(new Error('RUNTIME_ASSET_TOO_LARGE')); return; }
         digest.update(chunk); reportProgress(size); callback(null, chunk);
       } });
-      await pipeline(Readable.from(response.body as AsyncIterable<Uint8Array>), meter, handle.createWriteStream({ autoClose: false }));
-      await handle.sync();
-    } finally { await handle.close().catch(() => undefined); }
+      await awaitCurrent(pipeline(Readable.from(response.body as AsyncIterable<Uint8Array>), meter, handle.createWriteStream({ autoClose: false })));
+      await awaitCurrent(handle.sync());
+    } finally { await awaitCurrent(handle.close().catch(() => undefined)); }
     if (size <= manifest.asset.size) reportProgress(size, true);
     if (size !== manifest.asset.size) throw new Error('RUNTIME_SIZE_MISMATCH');
     if (digest.digest('hex') !== manifest.asset.sha256) throw new Error('RUNTIME_SHA256_MISMATCH');
-    await verifyGithubAttestation(manifest.asset.sha256, manifest.attestation.ref.replace(/^refs\/tags\//u, ''), manifest.asset.name);
+    await awaitCurrent(verifyGithubAttestation(manifest.asset.sha256, manifest.attestation.ref.replace(/^refs\/tags\//u, ''), manifest.asset.name));
+    this.assertCurrentConfirmation(target, generation, candidate);
     this.set(target, { phase: 'installing' });
-    await this.installVerifiedRuntime(part, manifest);
-    await rm(part, { force: true }); runtimePart = undefined;
+    await awaitCurrent(this.installVerifiedRuntime(part, manifest));
+    await awaitCurrent(rm(part, { force: true })); runtimePart = undefined;
+    this.assertCurrentConfirmation(target, generation, candidate);
     this.set(target, { phase: 'verified', rollback: true });
     } catch (error) {
       if (runtimePart) await rm(runtimePart, { force: true }).catch(() => undefined);
-      this.set(target, { phase: 'failed', error: { code: 'UPDATE_INSTALL_FAILED', message: 'Update verification or installation failed.' } });
+      if (this.isCurrentConfirmation(target, generation, candidate)) {
+        if (target === 'app' && this.verifiedAppCandidate === candidate) delete this.verifiedAppCandidate;
+        this.set(target, { phase: 'failed', error: { code: 'UPDATE_INSTALL_FAILED', message: 'Update verification or installation failed.' } });
+      }
       throw error;
     } finally {
       this.confirming.delete(target);
@@ -409,12 +474,7 @@ export class UpdateManager extends EventEmitter {
     let current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean; candidate?: boolean } = {};
     try {
       const parsed = JSON.parse(await readFile(stateFile, 'utf8')) as unknown;
-      const validated = z.object({
-        active: z.enum(['A', 'B', 'bundled']).optional(),
-        previous: z.enum(['A', 'B', 'bundled']).optional(),
-        healthy: z.boolean().optional(),
-        candidate: z.boolean().optional()
-      }).passthrough().parse(parsed);
+      const validated = runtimeStateSchema.parse(parsed);
       beforeState = validated as RuntimeCommitState;
       current = {
         ...(validated.active !== undefined ? { active: validated.active } : {}),
@@ -544,7 +604,12 @@ export class UpdateManager extends EventEmitter {
   }
   isPortable(): boolean { return this.portable; }
   quitAndInstall(): void {
-    if (this.portable || !this.snapshot('app').canInstall) throw new Error('APP_UPDATE_NOT_VERIFIED');
+    const snapshot = this.snapshot('app');
+    const candidate = this.appCandidate;
+    if (this.portable || !snapshot.canInstall || !candidate || this.verifiedAppCandidate !== candidate
+      || candidate.generation !== this.checkGenerations.get('app') || snapshot.candidateVersion !== candidate.version) {
+      throw new Error('APP_UPDATE_NOT_VERIFIED');
+    }
     this.appUpdater.quitAndInstall(false, true);
   }
 }

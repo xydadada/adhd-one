@@ -31,7 +31,7 @@ export function isTrustedControlUrl(candidate: string): boolean {
 export function allowedExternalUrl(candidate: string): URL | undefined {
   try {
     const url = new URL(candidate);
-    return url.protocol === 'https:' && !url.username && !url.password && EXTERNAL_HOSTS.has(url.hostname) ? url : undefined;
+    return url.protocol === 'https:' && url.port === '' && !url.username && !url.password && EXTERNAL_HOSTS.has(url.hostname) ? url : undefined;
   } catch { return undefined; }
 }
 
@@ -45,6 +45,7 @@ export function isPathInside(root: string, candidate: string): boolean {
 export function redactText(value: string): string {
   return value
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, 'sk-[REDACTED]')
+    .replace(/(["']?authorization["']?\s*[:=]\s*["']?(?:bearer|basic)\s+)[^"'\s,;}]+/giu, '$1[REDACTED]')
     .replace(/(authorization\s*[:=]\s*(?:bearer|basic)\s+)[^\s,;]+/giu, '$1[REDACTED]')
     .replace(/([?&](?:api_?key|token|key)=)[^&\s]+/giu, '$1[REDACTED]')
     .replace(/(["']?(?:api_?key|authorization|access_?token|token|secret|password)["']?\s*[:=]\s*["']?)[^\s,"';}]+/giu, '$1[REDACTED]')

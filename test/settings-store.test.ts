@@ -245,6 +245,57 @@ describe('SettingsStore', () => {
     expect(transientEntries(await readdir(root))).toEqual([]);
   });
 
+  it('preserves both corrupt files in quarantine before an explicit reset', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-recover-'));
+    roots.push(root);
+    const file = path.join(root, 'settings.json');
+    await writeFile(file, '{current broken', 'utf8');
+    await writeFile(`${file}.bak`, '{backup broken', 'utf8');
+    const store = new SettingsStore(file);
+
+    await expect(store.load()).rejects.toMatchObject({ code: 'SETTINGS_CORRUPT' });
+    const recovered = await store.recoverCorrupt();
+    expect(recovered).toMatchObject({ schemaVersion: 3, locale: 'zh-CN' });
+    expect(recovered.workspace).toBeUndefined();
+
+    const entries = await readdir(root);
+    const currentQuarantine = entries.find(name => name.startsWith('settings.json.quarantine-'));
+    const backupQuarantine = entries.find(name => name.startsWith('settings.json.bak.quarantine-'));
+    expect(currentQuarantine).toBeDefined();
+    expect(backupQuarantine).toBeDefined();
+    expect(await readFile(path.join(root, currentQuarantine!), 'utf8')).toBe('{current broken');
+    expect(await readFile(path.join(root, backupQuarantine!), 'utf8')).toBe('{backup broken');
+    await expect(jsonFile(file)).resolves.toMatchObject({ schemaVersion: 3, locale: 'zh-CN' });
+  });
+
+  it('repairs an unavailable saved workspace while preserving other settings', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-missing-workspace-'));
+    roots.push(root);
+    const file = path.join(root, 'settings.json');
+    const missingWorkspace = path.join(root, 'moved-workspace');
+    await writeFile(file, JSON.stringify({
+      schemaVersion: 3,
+      locale: 'en-US',
+      workspace: missingWorkspace,
+      preferredPort: 34567,
+      appChannel: 'preview',
+      runtimeChannel: 'stable',
+      closeToTrayExplained: true,
+      migration: { v1Imported: true, legacyDshPrompted: true }
+    }), 'utf8');
+    const store = new SettingsStore(file);
+
+    const loaded = await store.load();
+    expect(loaded).toMatchObject({ locale: 'en-US', preferredPort: 34567, appChannel: 'preview' });
+    expect(loaded.workspace).toBeUndefined();
+    expect(store.takeLoadIssue()).toBe('WORKSPACE_NOT_FOUND');
+    expect(store.takeLoadIssue()).toBeUndefined();
+    await expect(jsonFile(file)).resolves.not.toHaveProperty('workspace');
+    const quarantined = (await readdir(root)).filter(name => name.startsWith('settings.json.quarantine-'));
+    expect(quarantined).toHaveLength(1);
+    await expect(jsonFile(path.join(root, quarantined[0]!))).resolves.toMatchObject({ workspace: missingWorkspace });
+  });
+
   it('reports permission failures as typed IO without creating defaults', async () => {
     if (process.platform === 'win32' || process.getuid?.() === 0) return;
     const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-settings-eacces-'));

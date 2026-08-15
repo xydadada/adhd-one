@@ -1032,7 +1032,16 @@ export function scopedProcessKind(item, currentByPid, scope) {
     ? 'launch-executable' : undefined;
 }
 
-async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, executablePaths, tempRoots, commandMarkers }) {
+export async function auditScopedProcesses(
+  { startedAt, rootPid, knownProcesses, executablePaths, tempRoots, commandMarkers },
+  options = {}
+) {
+  const readProcesses = options.readProcesses ?? windowsProcesses;
+  const now = options.now ?? Date.now;
+  const sleep = options.delay ?? delay;
+  const observationMs = options.observationMs ?? PROCESS_PATH_AUDIT_TIMEOUT_MS;
+  const snapshotTimeoutMs = options.snapshotTimeoutMs ?? WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
   const knownByPid = new Map((knownProcesses ?? []).filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
   const knownPids = new Set(knownByPid.keys());
   if (safePid(rootPid)) knownPids.add(rootPid);
@@ -1047,26 +1056,25 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
     tempRoots: [...new Set((tempRoots ?? []).filter(value => typeof value === 'string' && value.length > 0))],
     commandMarkers: [...new Set((commandMarkers ?? []).filter(value => typeof value === 'string' && value.length > 0))]
   };
-  const deadline = Date.now() + PROCESS_PATH_AUDIT_TIMEOUT_MS;
+  const deadline = now() + Math.max(0, observationMs);
   let lastMatches = [];
   try {
     while (true) {
-      const remainingBudget = deadline - Date.now();
-      if (remainingBudget <= 0) {
-        return { verified: lastMatches.length === 0, pids: lastMatches.map(match => match.item.pid), kinds: [...new Set(lastMatches.map(match => match.kind))].sort() };
-      }
-      const processes = await windowsProcesses(remainingBudget);
+      // The observation window and the CIM command timeout are separate
+      // budgets. Passing the few milliseconds left in the observation window
+      // to PowerShell made the final clean snapshot fail spuriously.
+      const processes = await readProcesses(snapshotTimeoutMs);
       const currentByPid = new Map(processes.filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
       lastMatches = processes.flatMap(item => {
         if (!safePid(item?.pid) || item.pid === process.pid) return [];
         const kind = scopedProcessKind(item, currentByPid, scope);
         return kind ? [{ item, kind }] : [];
       });
-      const remaining = deadline - Date.now();
+      const remaining = deadline - now();
       if (remaining <= 0) {
         return { verified: lastMatches.length === 0, pids: lastMatches.map(match => match.item.pid), kinds: [...new Set(lastMatches.map(match => match.kind))].sort() };
       }
-      await delay(Math.min(POLL_INTERVAL_MS, remaining));
+      await sleep(Math.min(Math.max(0, pollIntervalMs), remaining));
     }
   } catch (error) {
     return {

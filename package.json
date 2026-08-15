@@ -14,6 +14,7 @@
     "prepare-electron": "node node_modules/electron/install.js",
     "prepare-runtime": "node scripts/prepare-node-runtime.mjs && node scripts/prepare-dsh-runtime.mjs",
     "prepare-runtime-archive": "node scripts/prepare-runtime-archive.mjs",
+    "prepare:dist": "node scripts/assert-empty-dist.mjs",
     "generate-icons": "node scripts/generate-icons.mjs",
     "build:app": "tsc -p tsconfig.json",
     "start": "npm run prepare-electron && npm run prepare-runtime && npm run generate-icons && npm run build:app && electron .",
@@ -47,10 +48,9 @@
     "package:portable:prepared": "npm run check:syntax && electron-builder --config build/portable.yml --win zip --x64 --publish never && node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked && npm run verify:package-closure -- dist/win-unpacked --mode portable",
     "package:setup": "npm run build:setup",
     "package:portable": "npm run build:portable",
-    "build:setup": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared",
-    "build:portable": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:portable:prepared",
-    "build:win": "npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared && npm run package:portable:prepared",
-    "sbom": "syft dir:. -o spdx-json=dist/ADHD-One-0.2.0-beta.2.spdx.json"
+    "build:setup": "npm run prepare:dist && npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared",
+    "build:portable": "npm run prepare:dist && npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:portable:prepared",
+    "build:win": "npm run prepare:dist && npm run prepare-electron && npm run prepare-runtime && npm run prepare-runtime-archive && npm run generate-icons && npm run build:app && npm run license:closure:gate && npm run package:setup:prepared && npm run package:portable:prepared"
   },
   "dependencies": {
     "@deepseek-ai/dsh-llm-mock-server": "0.1.0-rc.6",

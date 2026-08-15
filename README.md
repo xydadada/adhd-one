@@ -7,8 +7,8 @@
 
 | Compatibility | Status |
 |---|---|
-| Windows 11 x64 | Target platform; clean Windows 11 verification is pending |
-| Windows Server 2025 CI | Hardened build, 14-cycle installed E2E and Portable ZIP E2E passed on run `31870530357`; this is not Windows 11 evidence |
+| Windows 11 x64 | Target platform; source/static qualification completed, clean Windows 11 behavior not tested |
+| Windows Server 2025 CI | Historical packaged evidence exists for an older commit; it does not validate the current source or Windows 11 |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | Telemetry | Disabled by default |
 | Release status | [`v0.2.0-beta.2`](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2) prerelease published |
@@ -19,7 +19,7 @@ The single source of truth for implementation scope, progress and release gates 
 ## Highlights
 
 - Runs the unmodified official Harness Web UI in a sandboxed Electron window.
-- Supervises Node, PowerShell, pnpm and tool processes with a Windows Job Object; closing the Job terminates the complete child tree.
+- Creates the supervisor atomically inside a kill-on-close Windows Job with `STARTUPINFOEX`, and restricts inheritance to the two anonymous pipe handles.
 - Uses a hidden real console for PowerShell compatibility, nonce-authenticated inherited anonymous pipes for status, and loopback-only HTTP.
 - Includes tray controls, native notifications, an isolated Control Window, Provider Doctor, atomic settings and Stable/Preview update channels.
 - Bundles a pinned Node runtime and pnpm, so the packaged app does not depend on system Node, npm or pnpm.
@@ -38,14 +38,12 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 
 On first launch, select a workspace. ADHD One never defaults to granting the whole Documents folder.
 
-## Verification status
+## Verification status and limits
 
-- Windows Server 2025 CI: Quality run `31870530352` and Windows run `31870530357` passed on commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe`. Build, production Fuses, physical license closure, real electron-updater feed, Runtime staging, unpacked Portable smoke, Portable ZIP E2E, installed launch, force-kill, real workspace-write/tool-call, persisted Runtime rollback, ten consecutive starts, uninstall and the final all-jobs gate passed. Server 2025 results are not Windows 11 evidence.
-- Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
-- Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
-- Packaged E2E: the hardened Windows Server 2025 suite passed 14/14 installed cycles plus unpacked and final Portable ZIP checks. The added cycle seeded a present but version-mismatched slot B; the final EXE selected bundled and persisted the rollback both at ready and after clean exit. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
-- Next qualification gate: run the self-contained runner and four-row path matrix in a clean Windows 11 x64 VM, then sign/attest the resulting digest-bound evidence bundle. Server 2025 results do not count for this gate.
-- Current local evidence: `npm run check` passed 36 test files (423 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias). The latest pushed CI batch is still pending verification. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
+- Current source/static qualification: `npm run check` passed 36 test files (448 passed, 1 Windows 8.3-alias regression skipped); JavaScript syntax covered 31 files, and TypeScript completed with no errors.
+- Current empirical status: this hardening revision has not launched Electron/DSH, an installer, a VM, or a real provider. Windows 11 behavior, performance, SmartScreen, Chinese-user paths, long paths and upgrade behavior remain unverified.
+- Historical evidence only: commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe` passed Windows Server 2025 Quality run `31870530352` and packaged run `31870530357`. Those older results do not establish behavior of the current revision.
+- Published prerelease size: the existing beta.2 Setup asset is 151,012,608 bytes (144.02 MiB). This is not a measurement of a future build from the current source.
 
 ## Development
 
@@ -56,7 +54,7 @@ npm run smoke
 npm run build:win
 ```
 
-Prepare a self-contained runner on the development machine, then copy the runner directory and Setup EXE into a clean Windows 11 x64 VM:
+Optional future empirical validation can use the retained self-contained runner. It was intentionally not run for the current static qualification:
 
 ```powershell
 npm run prepare:win11-runner -- --output "C:\\adhd-one-win11-runner" --node "C:\\path\\to\\node.exe"

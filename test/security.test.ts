@@ -10,7 +10,11 @@ describe('security boundaries', () => {
     expect(isTrustedControlUrl('adhd-one://app:99/index.html')).toBe(false);
     expect(isTrustedControlUrl('adhd-one://app/settings')).toBe(false);
   });
-  it('restricts external navigation', () => { expect(allowedExternalUrl('https://github.com/xydadada/adhd-one')).toBeTruthy(); expect(allowedExternalUrl('https://github.com.evil.test/')).toBeUndefined(); });
+  it('restricts external navigation', () => {
+    expect(allowedExternalUrl('https://github.com/xydadada/adhd-one')).toBeTruthy();
+    expect(allowedExternalUrl('https://github.com.evil.test/')).toBeUndefined();
+    expect(allowedExternalUrl('https://github.com:8443/xydadada/adhd-one')).toBeUndefined();
+  });
   it('checks containment and archives', () => { expect(isPathInside('C:\\root', 'C:\\root\\ok')).toBe(true); expect(validateArchiveEntry('../bad')).toBe(false); expect(validateArchiveEntry('C:/bad')).toBe(false); });
   it('redacts secrets and local paths', () => {
     const redacted = redactText('Authorization: Basic dXNlcjpwYXNz apiKey="top-secret" DEEPSEEK_API_KEY=value C:\\Users\\Alice\\AppData file:///D:/private/log C%3A%5CUsers%5CAlice');
@@ -28,5 +32,9 @@ describe('security boundaries', () => {
     expect(extendedUnc).not.toMatch(/server|share|private|file\.txt/iu);
     expect(fileUnc).not.toMatch(/server|share|private|file\.txt/iu);
     expect(token).not.toContain('plain-token');
+  });
+  it('redacts quoted JSON authorization values without leaking the token suffix', () => {
+    const redacted = redactText('{"Authorization":"Bearer fake-secret","authorization":"Basic basic-secret"}');
+    expect(redacted).not.toMatch(/fake-secret|basic-secret/iu);
   });
 });

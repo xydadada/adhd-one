@@ -32,7 +32,7 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   });
 }
 
-async function runSupervisor(dshSource: string, stopAfterReady: boolean, stopAfterDelayMs?: number): Promise<SupervisorRun> {
+async function runSupervisor(dshSource: string, stopAfterReady: boolean, stopAfterDelayMs?: number, controlFrame?: string): Promise<SupervisorRun> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'adhd-supervisor-test-'));
   const dshEntry = path.join(directory, 'dsh.mjs');
   const logPath = path.join(directory, 'runtime.log');
@@ -100,7 +100,7 @@ async function runSupervisor(dshSource: string, stopAfterReady: boolean, stopAft
           if (!readySeen) reject(new Error('supervisor exited before ready'));
         });
       }), 'supervisor ready timeout');
-      child.stdin.write(`${JSON.stringify({ v: 1, nonce, generation, type: 'stop' })}\n`);
+      child.stdin.write(controlFrame ?? `${JSON.stringify({ v: 1, nonce, generation, type: 'stop' })}\n`);
     } else if (stopAfterDelayMs !== undefined) {
       await withTimeout(new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, stopAfterDelayMs);
@@ -110,7 +110,7 @@ async function runSupervisor(dshSource: string, stopAfterReady: boolean, stopAft
           reject(new Error('supervisor exited before delayed stop'));
         });
       }), 'supervisor delayed stop timeout');
-      child.stdin.write(`${JSON.stringify({ v: 1, nonce, generation, type: 'stop' })}\n`);
+      child.stdin.write(controlFrame ?? `${JSON.stringify({ v: 1, nonce, generation, type: 'stop' })}\n`);
     }
     const exit = await withTimeout(exited, 'supervisor exit timeout');
     if (protocolError) throw protocolError;
@@ -210,6 +210,14 @@ describe('supervisor runtime logging', () => {
     expect(result.log).not.toContain(secret);
     expect(result.log).not.toContain('Authorization');
     expect(result.log).not.toContain('C:\\Users\\Alice\\secret.txt');
+    expect(result.log).toContain('"event":"supervisor_fatal"');
+  });
+
+  it('fails closed on an oversized complete control frame', async () => {
+    const result = await runSupervisor('await new Promise(() => {});', false, 20, `${'x'.repeat(65_537)}\n`);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.messages.filter(message => message.type === 'fatal').map(message => message.code)).toContain('CONTROL_FRAME_TOO_LARGE');
     expect(result.log).toContain('"event":"supervisor_fatal"');
   });
 

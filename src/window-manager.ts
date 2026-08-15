@@ -50,6 +50,7 @@ export class WindowManager {
   }
 
   controlWindow(): BrowserWindow | undefined { return this.control; }
+  harnessWindow(): BrowserWindow | undefined { return this.harness; }
   showControl(): void { this.control?.show(); this.control?.focus(); }
   async quit(): Promise<void> { this.prepareToQuit(); app.quit(); }
   prepareToQuit(): void { this.quitting = true; this.tray?.destroy(); delete this.tray; }
@@ -146,6 +147,7 @@ export class WindowManager {
       event.preventDefault(); if (allowedExternalUrl(target)) void shell.openExternal(target);
     };
     window.webContents.on('will-navigate', guardNavigation);
+    window.webContents.on('will-frame-navigate', event => guardNavigation(event, event.url));
     window.webContents.on('will-redirect', guardNavigation);
   }
 }

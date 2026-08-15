@@ -123,4 +123,16 @@ describe('DshRpcError security boundary', () => {
     await expect(running).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('requires the official accepted receipt from /api/respond', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
+    await expect(new DshRpcClient(runtimeUrl).respond('approval-rpc', { outcome: 'rejected' })).resolves.toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ accepted: false, reason: 'not-pending' }), { status: 200 }));
+    await expect(new DshRpcClient(runtimeUrl).respond('approval-rpc', { outcome: 'rejected' })).rejects.toMatchObject({ code: 'DSH_PROTOCOL_INCOMPATIBLE' });
+
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    await expect(new DshRpcClient(runtimeUrl).respond('approval-rpc', { outcome: 'rejected' })).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' });
+  });
 });

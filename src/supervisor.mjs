@@ -11,8 +11,9 @@ const log = fs.createWriteStream(process.env.ADHD_LOG, { flags: 'a' });
 const writeStatus = process.stdout.write.bind(process.stdout);
 
 const MAX_OUTPUT_BUFFER = 65_536;
+const MAX_CONTROL_FRAME_BYTES = 65_536;
 const READY_LINE = /^dsh web:\s+(http:\/\/(?:127\.0\.0\.1|localhost):\d+)\s*$/u;
-const FATAL_CODES = new Set(['SUPERVISOR_UNCAUGHT', 'SUPERVISOR_REJECTION', 'DSH_BOOT_FAILED', 'PORT_IN_USE']);
+const FATAL_CODES = new Set(['SUPERVISOR_UNCAUGHT', 'SUPERVISOR_REJECTION', 'DSH_BOOT_FAILED', 'PORT_IN_USE', 'CONTROL_FRAME_TOO_LARGE']);
 const LOG_SCHEMA = Object.freeze({
   supervisor_boot: Object.freeze({ pid: value => Number.isInteger(value) }),
   dsh_import_started: Object.freeze({}),
@@ -106,7 +107,12 @@ process.stdin.on('data', chunk => {
     const newline = inbound.indexOf('\n');
     if (newline < 0) break;
     const raw = inbound.slice(0, newline); inbound = inbound.slice(newline + 1);
-    if (raw.length > 65_536) continue;
+    if (Buffer.byteLength(raw, 'utf8') > MAX_CONTROL_FRAME_BYTES) {
+      inbound = '';
+      sendFatal('CONTROL_FRAME_TOO_LARGE');
+      closeLogAndExit(1);
+      return;
+    }
     try {
       const message = JSON.parse(raw);
       if (message.nonce !== nonce || message.generation !== generation) continue;
@@ -120,6 +126,11 @@ process.stdin.on('data', chunk => {
         setTimeout(() => closeLogAndExit(0), 4_500).unref();
       }
     } catch {}
+  }
+  if (Buffer.byteLength(inbound, 'utf8') > MAX_CONTROL_FRAME_BYTES) {
+    inbound = '';
+    sendFatal('CONTROL_FRAME_TOO_LARGE');
+    closeLogAndExit(1);
   }
 });
 process.stdin.resume();

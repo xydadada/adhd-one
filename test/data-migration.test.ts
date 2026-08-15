@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { assertPortableDataWritable, copyLegacyDsh, DataMigrationError, detectLegacyDsh } from '../src/data-migration.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { assertPortableDataWritable, copyLegacyDsh, DataMigrationError, detectLegacyDsh, runLegacyDshImportFlow } from '../src/data-migration.js';
 
 const roots: string[] = [];
 
@@ -106,5 +106,43 @@ describe('legacy DSH data migration', () => {
     const error = new DataMigrationError('DESTINATION_EXISTS');
     expect(error.message).toBe('DESTINATION_EXISTS');
     expect(error.message).not.toContain('token');
+  });
+
+  it('marks the legacy prompt only after a successful accepted import', async () => {
+    const copy = vi.fn().mockRejectedValueOnce(new Error('copy failed')).mockResolvedValueOnce(undefined);
+    const markPrompted = vi.fn().mockResolvedValue(undefined);
+    const retryAfterFailure = vi.fn().mockResolvedValue(true);
+
+    await expect(runLegacyDshImportFlow({ accepted: true, copy, markPrompted, retryAfterFailure })).resolves.toBe('imported');
+    expect(copy).toHaveBeenCalledTimes(2);
+    expect(retryAfterFailure).toHaveBeenCalledOnce();
+    expect(markPrompted).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a failed deferred import eligible for the next startup prompt', async () => {
+    const copy = vi.fn().mockRejectedValue(new Error('copy failed'));
+    const markPrompted = vi.fn().mockResolvedValue(undefined);
+
+    await expect(runLegacyDshImportFlow({
+      accepted: true,
+      copy,
+      markPrompted,
+      retryAfterFailure: async () => false
+    })).resolves.toBe('deferred');
+    expect(markPrompted).not.toHaveBeenCalled();
+  });
+
+  it('records an explicit legacy import decline without copying', async () => {
+    const copy = vi.fn().mockResolvedValue(undefined);
+    const markPrompted = vi.fn().mockResolvedValue(undefined);
+
+    await expect(runLegacyDshImportFlow({
+      accepted: false,
+      copy,
+      markPrompted,
+      retryAfterFailure: async () => true
+    })).resolves.toBe('declined');
+    expect(copy).not.toHaveBeenCalled();
+    expect(markPrompted).toHaveBeenCalledOnce();
   });
 });

@@ -1,12 +1,12 @@
-/** Win32 process/job launcher adapted from DeepSeek Harness sandbox-windows-acl (MIT), commit 47f943859b. */
+/** Win32 launcher adapted from DeepSeek Harness sandbox-windows-acl (MIT), commit 47f943859b; STARTUPINFOEX Job/handle attributes follow Microsoft Win32 process-creation guidance. */
 import koffi from 'koffi';
 import { lstatSync } from 'node:fs';
 import path from 'node:path';
 
-const CREATE_SUSPENDED = 0x00000004;
 const CREATE_NEW_CONSOLE = 0x00000010;
 const CREATE_NEW_PROCESS_GROUP = 0x00000200;
 const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 const STARTF_USESHOWWINDOW = 0x00000001;
 const STARTF_USESTDHANDLES = 0x00000100;
 const SW_HIDE = 0;
@@ -16,8 +16,11 @@ const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9;
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
 const WAIT_OBJECT_0 = 0;
 const WAIT_TIMEOUT = 258;
+const ERROR_INSUFFICIENT_BUFFER = 122;
 const FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
 const INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+const PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
+const PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
 
 export function quoteWindowsArg(argument: string): string {
   if (argument === '') return '""';
@@ -50,9 +53,9 @@ interface NativeBindings {
   setInformationJobObject: (job: bigint, infoClass: number, data: Buffer, length: number) => number;
   queryInformationJobObject: (job: bigint, infoClass: number, data: Buffer, length: number, returnedLength: Buffer) => number;
   createProcessW: (...args: unknown[]) => number;
-  assignProcessToJobObject: (job: bigint, process: bigint) => number;
-  resumeThread: (thread: bigint) => number;
-  terminateProcess: (process: bigint, code: number) => number;
+  initializeProcThreadAttributeList: (list: Buffer | null, count: number, flags: number, size: Buffer) => number;
+  updateProcThreadAttribute: (list: Buffer, flags: number, attribute: bigint, value: Buffer, size: bigint, previous: null, returnSize: null) => number;
+  deleteProcThreadAttributeList: (list: Buffer) => void;
   terminateJobObject: (job: bigint, code: number) => number;
   closeHandle: (handle: bigint) => number;
   waitForSingleObject: (handle: bigint, timeout: number) => number;
@@ -78,9 +81,9 @@ function bindings(): NativeBindings {
     setInformationJobObject: kernel.func('int __stdcall SetInformationJobObject(void *, int, void *, uint32)') as NativeBindings['setInformationJobObject'],
     queryInformationJobObject: kernel.func('int __stdcall QueryInformationJobObject(void *, int, void *, uint32, uint32 *)') as NativeBindings['queryInformationJobObject'],
     createProcessW: kernel.func('int __stdcall CreateProcessW(str16, void *, void *, void *, int, uint32, void *, str16, void *, void *)') as NativeBindings['createProcessW'],
-    assignProcessToJobObject: kernel.func('int __stdcall AssignProcessToJobObject(void *, void *)') as NativeBindings['assignProcessToJobObject'],
-    resumeThread: kernel.func('uint32 __stdcall ResumeThread(void *)') as NativeBindings['resumeThread'],
-    terminateProcess: kernel.func('int __stdcall TerminateProcess(void *, uint32)') as NativeBindings['terminateProcess'],
+    initializeProcThreadAttributeList: kernel.func('int __stdcall InitializeProcThreadAttributeList(void *, uint32, uint32, size_t *)') as NativeBindings['initializeProcThreadAttributeList'],
+    updateProcThreadAttribute: kernel.func('int __stdcall UpdateProcThreadAttribute(void *, uint32, uintptr_t, void *, size_t, void *, size_t *)') as NativeBindings['updateProcThreadAttribute'],
+    deleteProcThreadAttributeList: kernel.func('void __stdcall DeleteProcThreadAttributeList(void *)') as NativeBindings['deleteProcThreadAttributeList'],
     terminateJobObject: kernel.func('int __stdcall TerminateJobObject(void *, uint32)') as NativeBindings['terminateJobObject'],
     closeHandle: kernel.func('int __stdcall CloseHandle(void *)') as NativeBindings['closeHandle'],
     waitForSingleObject: kernel.func('uint32 __stdcall WaitForSingleObject(void *, uint32)') as NativeBindings['waitForSingleObject'],
@@ -132,8 +135,18 @@ function createPipe(api: NativeBindings): { read: bigint; write: bigint } {
   if (!api.createPipe(readSlot, writeSlot, null, 0)) throw new Error(`CreatePipe failed: ${api.getLastError()}`);
   const read = koffi.decode(readSlot, pointer) as bigint | null;
   const write = koffi.decode(writeSlot, pointer) as bigint | null;
-  if (!read || !write) throw new Error('CreatePipe returned invalid handles');
+  if (!read || !write) {
+    if (read) api.closeHandle(read);
+    if (write) api.closeHandle(write);
+    throw new Error('CreatePipe returned invalid handles');
+  }
   return { read, write };
+}
+
+function terminateJobAndWait(api: NativeBindings, job: bigint, processHandle: bigint, context: string): void {
+  if (!api.terminateJobObject(job, 1)) throw new Error(`${context}_TERMINATE_JOB_FAILED:${api.getLastError()}`);
+  const wait = api.waitForSingleObject(processHandle, 5_000);
+  if (wait !== WAIT_OBJECT_0) throw new Error(`${context}_WAIT_FAILED:${wait}:${api.getLastError()}`);
 }
 
 export interface ManagedProcess {
@@ -156,7 +169,7 @@ export function createManagedProcess(options: {
   const api = bindings();
   const command = Buffer.from(`${buildWindowsCommandLine(options.executable, options.args)}\0`, 'utf16le');
   const environment = buildUnicodeEnvironment(options.env);
-  const flags = CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT;
+  const flags = CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
   const job = api.createJobObjectW(null, null);
   if (!job || job === 0n) throw new Error(`CreateJobObjectW failed: ${api.getLastError()}`);
   const jobInfo = Buffer.alloc(144);
@@ -185,22 +198,45 @@ export function createManagedProcess(options: {
     const code = api.getLastError(); closePipes(); api.closeHandle(job); throw new Error(`SetHandleInformation failed: ${code}`);
   }
 
-  const startup = Buffer.alloc(104);
-  startup.writeUInt32LE(104, 0);
+  const attributeBytes = Buffer.alloc(8);
+  const sizeProbe = api.initializeProcThreadAttributeList(null, 2, 0, attributeBytes);
+  const sizeProbeError = api.getLastError();
+  const attributeListSize = Number(attributeBytes.readBigUInt64LE(0));
+  if (sizeProbe !== 0 || sizeProbeError !== ERROR_INSUFFICIENT_BUFFER
+    || !Number.isSafeInteger(attributeListSize) || attributeListSize <= 0 || attributeListSize > 1_048_576) {
+    closePipes(); api.closeHandle(job); throw new Error('InitializeProcThreadAttributeList returned an invalid size');
+  }
+  const attributeList = Buffer.alloc(attributeListSize);
+  if (!api.initializeProcThreadAttributeList(attributeList, 2, 0, attributeBytes)) {
+    const code = api.getLastError(); closePipes(); api.closeHandle(job); throw new Error(`InitializeProcThreadAttributeList failed: ${code}`);
+  }
+  const inheritedHandles = Buffer.alloc(16);
+  inheritedHandles.writeBigUInt64LE(input.read, 0);
+  inheritedHandles.writeBigUInt64LE(output.write, 8);
+  const jobHandles = Buffer.alloc(8);
+  jobHandles.writeBigUInt64LE(job, 0);
+  if (!api.updateProcThreadAttribute(attributeList, 0, BigInt(PROC_THREAD_ATTRIBUTE_HANDLE_LIST), inheritedHandles, 16n, null, null)
+    || !api.updateProcThreadAttribute(attributeList, 0, BigInt(PROC_THREAD_ATTRIBUTE_JOB_LIST), jobHandles, 8n, null, null)) {
+    const code = api.getLastError(); api.deleteProcThreadAttributeList(attributeList); closePipes(); api.closeHandle(job);
+    throw new Error(`UpdateProcThreadAttribute failed: ${code}`);
+  }
+
+  const startup = Buffer.alloc(112);
+  startup.writeUInt32LE(112, 0);
   startup.writeUInt32LE(STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES, 60);
   startup.writeUInt16LE(SW_HIDE, 64);
   startup.writeBigUInt64LE(input.read, 80);
   startup.writeBigUInt64LE(output.write, 88);
   startup.writeBigUInt64LE(output.write, 96);
+  startup.writeBigUInt64LE(koffi.address(attributeList), 104);
   const info = Buffer.alloc(24);
   let created: number;
   try {
     created = api.createProcessW(options.executable, command, null, null, 1, flags, environment, options.cwd, startup, info);
   } catch (error) {
-    closePipes(); api.closeHandle(job); throw error;
+    api.deleteProcThreadAttributeList(attributeList); closePipes(); api.closeHandle(job); throw error;
   }
-  api.setHandleInformation(input.read, HANDLE_FLAG_INHERIT, 0);
-  api.setHandleInformation(output.write, HANDLE_FLAG_INHERIT, 0);
+  api.deleteProcThreadAttributeList(attributeList);
   if (!created) {
     const code = api.getLastError(); closePipes(); api.closeHandle(job); throw new Error(`CreateProcessW failed: ${code}`);
   }
@@ -210,24 +246,17 @@ export function createManagedProcess(options: {
   const threadHandle = pointerFrom(info, 8);
   const pid = info.readUInt32LE(16);
   if (!processHandle || !threadHandle) {
-    if (processHandle) { api.terminateProcess(processHandle, 1); api.waitForSingleObject(processHandle, 5_000); }
+    let cleanupError: unknown;
+    if (processHandle) {
+      try { terminateJobAndWait(api, job, processHandle, 'INVALID_PROCESS_INFO'); } catch (error) { cleanupError = error; }
+    } else if (!api.terminateJobObject(job, 1)) {
+      cleanupError = new Error(`INVALID_PROCESS_INFO_TERMINATE_JOB_FAILED:${api.getLastError()}`);
+    }
     if (threadHandle) api.closeHandle(threadHandle);
     if (processHandle) api.closeHandle(processHandle);
-    api.closeHandle(input.write); api.closeHandle(output.read); api.closeHandle(job); throw new Error('CreateProcessW returned invalid handles');
-  }
-  if (!api.assignProcessToJobObject(job, processHandle)) {
-    const code = api.getLastError();
-    api.terminateProcess(processHandle, 1);
-    api.waitForSingleObject(processHandle, 5_000);
-    api.closeHandle(input.write); api.closeHandle(output.read); api.closeHandle(threadHandle); api.closeHandle(processHandle); api.closeHandle(job);
-    throw new Error(`AssignProcessToJobObject failed: ${code}`);
-  }
-  if (api.resumeThread(threadHandle) === 0xFFFFFFFF) {
-    const code = api.getLastError();
-    api.terminateProcess(processHandle, 1);
-    api.waitForSingleObject(processHandle, 5_000);
-    api.closeHandle(input.write); api.closeHandle(output.read); api.closeHandle(threadHandle); api.closeHandle(processHandle); api.closeHandle(job);
-    throw new Error(`ResumeThread failed: ${code}`);
+    api.closeHandle(input.write); api.closeHandle(output.read); api.closeHandle(job);
+    if (cleanupError) throw cleanupError;
+    throw new Error('CreateProcessW returned invalid handles');
   }
   api.closeHandle(threadHandle);
   let closed = false;
@@ -279,7 +308,9 @@ export function createManagedProcess(options: {
       }
       return Buffer.concat(chunks);
     },
-    terminate(exitCode = 1) { api.terminateJobObject(job, exitCode); },
+    terminate(exitCode = 1) {
+      if (!api.terminateJobObject(job, exitCode)) throw new Error(`TerminateJobObject failed: ${api.getLastError()}`);
+    },
     activeProcessCount() {
       if (closed) throw new Error('PROCESS_JOB_CLOSED');
       const accounting = Buffer.alloc(48);
@@ -301,10 +332,12 @@ export function createManagedProcess(options: {
     close() {
       if (closed) return;
       closed = true;
-      api.closeHandle(input.write);
-      api.closeHandle(output.read);
-      api.closeHandle(job);
+      const failed: string[] = [];
+      if (!api.closeHandle(input.write)) failed.push('stdin');
+      if (!api.closeHandle(output.read)) failed.push('stdout');
+      if (!api.closeHandle(job)) failed.push('job');
       void exitPromise.then(closeProcessHandle, closeProcessHandle);
+      if (failed.length > 0) throw new Error(`CloseHandle failed: ${failed.join(',')}:${api.getLastError()}`);
     }
   };
 }

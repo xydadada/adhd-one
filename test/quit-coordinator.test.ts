@@ -58,6 +58,26 @@ describe('QuitCoordinator', () => {
     expect(fixture.hardExit).toHaveBeenCalledWith(0);
   });
 
+  it('arms the hard-exit fallback before entering Electron native shutdown', async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const fixture = createFixture({
+      setTimeout: (callback, delay) => {
+        order.push(`schedule:${delay}`);
+        return setTimeout(callback, delay);
+      },
+      appExit: exitCode => { order.push(`appExit:${exitCode}`); }
+    });
+
+    await fixture.coordinator.quit();
+
+    expect(order).toEqual([
+      `schedule:${RUNTIME_STOP_TIMEOUT_MS}`,
+      `schedule:${HARD_EXIT_DELAY_MS}`,
+      'appExit:0'
+    ]);
+  });
+
   it('forces shutdown after the bounded five-second stop deadline', async () => {
     vi.useFakeTimers();
     const fixture = createFixture({ runtime: {

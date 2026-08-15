@@ -91,8 +91,10 @@ export class QuitCoordinator {
       try { this.dependencies.runtime.forceShutdown(); } catch { /* continue shutdown */ }
     }
     try { this.dependencies.windows.destroyForQuit(); } catch { /* continue shutdown */ }
-    try { this.dependencies.appExit(exitCode); } catch { /* hardExit remains available */ }
+    // Arm the last-resort exit before entering Electron's native shutdown.
+    // app.exit() may not return control to JavaScript on every Windows exit path.
     this.scheduleHardExit(exitCode);
+    try { this.dependencies.appExit(exitCode); } catch { /* hardExit remains available */ }
   }
 
   private async stopWithinDeadline(): Promise<boolean> {

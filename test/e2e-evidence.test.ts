@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   cdpClosed,
+  hasObservedProcessTree,
   isValidCdpWebSocketUrl,
   sanitizeEvidence,
   scopedProcessKind,
@@ -127,6 +128,15 @@ describe('packaged E2E evidence safety', () => {
 
     expect(calls).toBe(2);
     expect(tree.map(item => item.pid)).toEqual([100, 200]);
+  });
+
+  it('requires both the Electron root and runtime before treating a process tree as observed', () => {
+    const root = { pid: 100, parentPid: 1 };
+    const runtime = { pid: 200, parentPid: 100 };
+
+    expect(hasObservedProcessTree([root, runtime], 100, 200)).toBe(true);
+    expect(hasObservedProcessTree([], 100, 200)).toBe(false);
+    expect(hasObservedProcessTree([root], 100, 200)).toBe(false);
   });
 
   it('does not claim an unrelated same-path process without this E2E launch markers', () => {

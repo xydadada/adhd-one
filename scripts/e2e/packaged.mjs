@@ -733,6 +733,11 @@ function processTree(processes, rootPid) {
   return [...selected.values()];
 }
 
+export function hasObservedProcessTree(processes, rootPid, runtimePid) {
+  return processes.some(item => item.pid === rootPid)
+    && processes.some(item => item.pid === runtimePid);
+}
+
 export async function waitForProcessTree(readProcesses, rootPid, runtimePid, timeoutMs = PROCESS_TREE_DISCOVERY_TIMEOUT_MS, pollIntervalMs = 200) {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   let lastTree = [];
@@ -741,7 +746,7 @@ export async function waitForProcessTree(readProcesses, rootPid, runtimePid, tim
     try {
       lastTree = processTree(await readProcesses(), rootPid);
       lastError = undefined;
-      if (lastTree.some(item => item.pid === rootPid) && lastTree.some(item => item.pid === runtimePid)) return lastTree;
+      if (hasObservedProcessTree(lastTree, rootPid, runtimePid)) return lastTree;
     } catch (error) {
       lastError = error;
     }
@@ -1460,12 +1465,14 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
         ? [`--user-data-dir=${prepared.userData}`, `--remote-debugging-port=${record.cdpPort}`]
         : []
     });
-    record.finalScopedProcessAuditPassed = processAudit.verified === true;
+    const processTreeObserved = hasObservedProcessTree(launchedTree, child?.pid, record.runtimePid);
+    record.finalScopedProcessAuditPassed = processTreeObserved && processAudit.verified === true;
     record.finalScopedProcessAuditPids = processAudit.pids;
     record.finalScopedProcessAuditCount = processAudit.pids.length;
     record.finalScopedProcessAuditKinds = processAudit.kinds ?? [];
     record.errorCode ??= processAudit.errorCode;
-    if (!record.finalScopedProcessAuditPassed) record.errorCode ??= 'PROCESS_PATH_AUDIT_FOUND';
+    if (!processTreeObserved) record.errorCode ??= 'RUNTIME_PID_NOT_IN_APP_PROCESS_TREE';
+    else if (!record.finalScopedProcessAuditPassed) record.errorCode ??= 'PROCESS_PATH_AUDIT_FOUND';
     if (prepared && record.cleanup === 'removed' && !await pathIsAbsent(prepared.root)) {
       record.cleanupRootAbsent = false;
       record.cleanup = 'failed';

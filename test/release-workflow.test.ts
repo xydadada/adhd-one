@@ -72,7 +72,7 @@ describe('release workflow identity gates', () => {
     expect(workflow).toContain("if ($isPrerelease) { $arguments += '--prerelease' }");
     expect(workflow).not.toContain("$env:GITHUB_REF_NAME.Contains('-')");
     expect(readback).toBeGreaterThan(create);
-    expect(workflow).toContain('--json tagName,isDraft,isPrerelease,assets');
+    expect(workflow).toContain('--json id,tagName,isDraft,isPrerelease,assets');
     expect(workflow).toContain('$release.tagName');
     expect(workflow).toContain('$release.isDraft');
     expect(workflow).toContain('$release.isPrerelease');
@@ -101,7 +101,9 @@ describe('release workflow identity gates', () => {
     expect(publishArguments).toBeGreaterThan(digestCheck);
     expect(workflow.slice(publishArguments, finalReadback)).toContain("'--repo', $env:RELEASE_REPOSITORY, '--draft=false'");
     expect(finalReadback).toBeGreaterThan(publishArguments);
-    expect(workflow).toContain('$releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME"');
+    expect(workflow).toContain('$releaseId = [string]$release.id');
+    expect(workflow).toContain("$releaseId -notmatch '^[1-9][0-9]*$'");
+    expect(workflow).toContain('$releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/$releaseId"');
     expect(workflow).toContain('gh api $releaseApiPath -H');
     expect(workflow).toContain('$remoteAsset.digest');
     expect(workflow).toContain('$localAssetDigests[$name]');

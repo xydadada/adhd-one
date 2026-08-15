@@ -849,7 +849,7 @@ jobs:
             throw "gh release create failed with exit code $LASTEXITCODE"
           }
 
-          $releaseViewJson = (& gh release view $env:GITHUB_REF_NAME --repo $env:RELEASE_REPOSITORY --json tagName,isDraft,isPrerelease,assets | Out-String)
+          $releaseViewJson = (& gh release view $env:GITHUB_REF_NAME --repo $env:RELEASE_REPOSITORY --json id,tagName,isDraft,isPrerelease,assets | Out-String)
           $releaseViewExitCode = $LASTEXITCODE
           if ($releaseViewExitCode -ne 0) {
             throw "gh release view failed with exit code $releaseViewExitCode"
@@ -871,8 +871,14 @@ jobs:
           if ($remoteIsPrerelease -ne $isPrerelease) {
             throw "Published release prerelease=$remoteIsPrerelease does not match package.json SemVer prerelease=$isPrerelease"
           }
+          $releaseId = [string]$release.id
+          if ($releaseId -notmatch '^[1-9][0-9]*$') {
+            throw "gh release view returned an invalid release id: $releaseId"
+          }
 
-          $releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME"
+          # The tag lookup endpoint does not expose draft releases. Query the
+          # freshly created draft by its immutable numeric release id instead.
+          $releaseApiPath = "repos/$env:RELEASE_REPOSITORY/releases/$releaseId"
           $releaseApiJson = (& gh api $releaseApiPath -H 'Accept: application/vnd.github+json' | Out-String)
           $releaseApiExitCode = $LASTEXITCODE
           if ($releaseApiExitCode -ne 0) {

@@ -76,6 +76,12 @@ describe('offline Windows 11 evidence verifier', () => {
     expect(JSON.stringify(result)).not.toContain('Alice');
   });
 
+  it('requires the packaged ADHD One executable name', () => {
+    const evidence = validEvidence();
+    (evidence.executable as JsonObject).name = 'payload.exe';
+    expect(validateWin11Evidence(evidence)).toEqual({ ok: false, errors: [ERROR.EXECUTABLE_INVALID] });
+  });
+
   it('requires Windows 11 x64 and an explicitly verified lowercase SHA-256 digest', () => {
     const platform = validEvidence();
     (platform.platform as JsonObject).os = 'Windows 10';
@@ -130,11 +136,32 @@ describe('offline Windows 11 evidence verifier', () => {
     expect(cliPass.stderr).toBe('');
 
     const invalidPath = path.join(root, 'invalid.json');
-    await writeFile(invalidPath, '{"platform":{"os":"C:\\Users\\Alice"}}', 'utf8');
+    await writeFile(invalidPath, JSON.stringify({
+      ...validEvidence(),
+      executable: {
+        ...(validEvidence().executable as JsonObject),
+        name: 'C:\\Users\\Alice\\ADHD One.exe'
+      }
+    }), 'utf8');
     const cliFail = spawnSync(process.execPath, [scriptPath, invalidPath], { encoding: 'utf8' });
     expect(cliFail.status).toBe(1);
     expect(`${cliFail.stdout}\n${cliFail.stderr}`).not.toContain('Alice');
     await expect(readFile(invalidPath, 'utf8')).resolves.toContain('Alice');
+  });
+
+  it('rejects duplicate JSON keys before parsing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'win11-evidence-'));
+    roots.push(root);
+    const filename = path.join(root, 'duplicate.json');
+    const text = JSON.stringify(validEvidence()).replace(
+      '"sha256Verified":true',
+      '"sha256Verified":false,"sha256Verified":true'
+    );
+    await writeFile(filename, text, 'utf8');
+    await expect(verifyWin11EvidenceFile(filename)).resolves.toEqual({
+      ok: false,
+      errors: [ERROR.JSON_INVALID]
+    });
   });
 
   it('does not accept a self-reported pass field or a path-like unknown field', () => {
@@ -145,5 +172,15 @@ describe('offline Windows 11 evidence verifier', () => {
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual([ERROR.EXTRA_FIELD]);
     expect(JSON.stringify(result)).not.toMatch(/Alice|ADHD One/iu);
+  });
+
+  it('rejects non-enumerable and symbol extra fields for direct object callers', () => {
+    const hidden = validEvidence();
+    Object.defineProperty(hidden, 'hidden', { value: true, enumerable: false });
+    expect(validateWin11Evidence(hidden).errors).toContain(ERROR.EXTRA_FIELD);
+
+    const symbolic = validEvidence();
+    Object.defineProperty(symbolic, Symbol('hidden'), { value: true, enumerable: false });
+    expect(validateWin11Evidence(symbolic).errors).toContain(ERROR.EXTRA_FIELD);
   });
 });

@@ -41,7 +41,7 @@ export const WIN11_EVIDENCE_LIMITS = Object.freeze({
 
 const MAX_JSON_BYTES = 1024 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/u;
-const SAFE_EXE_NAME = /^(?=.{1,128}$)[A-Za-z0-9][A-Za-z0-9 ._()+&-]*\.exe$/iu;
+const EXPECTED_EXE_NAME = 'ADHD One.exe';
 
 const TOP_LEVEL_KEYS = new Set([
   'schemaVersion',
@@ -108,8 +108,8 @@ function hasExactKeys(value, allowed, errors) {
   }
 
   let valid = true;
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) {
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !allowed.has(key)) {
       addError(errors, ERROR.EXTRA_FIELD);
       valid = false;
     }
@@ -141,6 +141,20 @@ function looksLikePath(value) {
       || value === '..');
 }
 
+function hasDuplicateJsonKeys(text) {
+  const keys = new Set();
+  const propertyPattern = /"(?:\\.|[^"\\])*"\s*:/gu;
+  for (const match of text.matchAll(propertyPattern)) {
+    const literal = match[0].slice(0, match[0].lastIndexOf(':')).trim();
+    let key;
+    try { key = JSON.parse(literal); }
+    catch { return true; }
+    if (keys.has(key)) return true;
+    keys.add(key);
+  }
+  return false;
+}
+
 function validatePlatform(value, errors) {
   if (!hasExactKeys(value, PLATFORM_KEYS, errors)) return;
   if (value.os !== 'Windows 11' || value.architecture !== 'x64') {
@@ -154,7 +168,7 @@ function validatePlatform(value, errors) {
 function validateExecutable(value, errors) {
   if (!hasExactKeys(value, EXECUTABLE_KEYS, errors)) return;
 
-  if (typeof value.name !== 'string' || !SAFE_EXE_NAME.test(value.name)) {
+  if (value.name !== EXPECTED_EXE_NAME) {
     addError(errors, looksLikePath(value.name) ? ERROR.SENSITIVE_PATH : ERROR.EXECUTABLE_INVALID);
   }
   if (typeof value.sha256 !== 'string' || !SHA256.test(value.sha256)) {
@@ -251,6 +265,7 @@ export async function verifyWin11EvidenceFile(filename) {
 
   let value;
   try {
+    if (hasDuplicateJsonKeys(text)) return { ok: false, errors: [ERROR.JSON_INVALID] };
     value = JSON.parse(text);
   } catch {
     return { ok: false, errors: [ERROR.JSON_INVALID] };

@@ -25,15 +25,17 @@
 
 当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 是 prerelease；`v0.2.0-beta.2` 正在准备但尚未发布；`v0.2.0` Stable 尚未发布。当前工作树 `package.json` 的版本为 `0.2.0-beta.2`，不代表已有同名 tag、Release 或 `v0.2.0` Stable 资产。
 
-当前本地验证进度：**74%**（在此前 73 分基础上新增 Q2 +1）。`v0.2.0-beta.2` 的 78% 门槛尚未达到；不得提前打 tag。已计入本机 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、快速启动注册一致性检查、真实 Runtime smoke、Runtime staging smoke、Runtime archive closure smoke、迁移/reparse 安全测试、Fuse 静态断言，以及最终 Portable EXE 上使用官方 mock provider 完成的真实 PowerShell tool-call 往返。完整十次循环、NSIS 安装后 E2E、GitHub Actions、Stable 发布和干净 Windows 11 结果尚未计入。
+当前验证进度：**79%**（Q3 打包后自动 E2E +5）。`v0.2.0-beta.2` 的 78% 工程门槛已达到，但 tag/Release 尚未创建；最终文档提交仍必须在同一 SHA 上再次通过 Quality 与 Windows verification 后才允许打 tag。已计入 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、Runtime smoke、Fuse，以及 Windows Server 2025 上的 build、安装版 13-cycle、真实 PowerShell tool-call、十次启动、卸载残留和 Portable ZIP E2E。Stable 发布、干净 Windows 11 与性能结果尚未计入。
 
-最新本地证据：`npm run check` 最近一次完整运行通过 26 个 test files（279 个通过，1 个 Windows 8.3 alias 回归因本卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；冻结源码编译后 `node scripts/smoke-app.mjs` 在 7.84 秒内输出 `SMOKE_OK`。最终 Portable EXE 的 launch、force-kill 和 workspace-write 三个独立 E2E 均通过；workspace-write 证据确认 `packaged-asar` RPC client、`workspace-write` 权限、mock 鉴权、PowerShell 调用、参数解析、工具结果、第二次 provider 往返、最终 nonce、Session 归档、优雅退出和进程树清空。此前真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。这些本地证据仍不等同于完整 packaged suite、NSIS 安装后 E2E、Windows 11 或 Stable 发布证据。
+最新证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；此前 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
 
 2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
 
 同日 run `31827138503`（commit `8927f7a`）的 Quality 通过，但 Windows verification 在 `npm run check` 阶段失败：15 个 evidence verifier 用例都把 runner 临时目录判为 `EVIDENCE_DIRECTORY_INVALID`，因此 build、installed 和 Portable job 未执行。该结果只证明 Windows runner 路径规范化存在兼容性缺口，不是应用或 Harness 回归，也不计入 Q3。
 
 随后 run `31828488370`（commit `03d5d2b`）通过 Quality、build、Fuse、精确 Windows 资产校验和 Portable E2E。安装版首个 launch 达到 ready、退出码为 0，Runtime 与已知进程树均清空，但五秒最终路径审计仍发现 1 个新进程；清理阶段又遇到 NSIS key 在枚举后被删除的注册表竞态，导致 summary 未落盘。该 run 仍为 failure、Q3 仍为 0；当前修复把 Electron hard-exit 后备从 250ms 调整为 1 秒，并只忽略已经实际消失的 registry key。
+
+2026-08-15 commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 与 Windows Server 2025 run `31857910840` 全绿。`quality`、`codeql`、`build-windows`、`portable-e2e`、`installed-e2e` 与 `test-and-package` 均为 success；安装版 launch、force-kill、workspace-write 和十次启动共 13/13 循环通过，卸载后安装目录、应用范围进程、注册表和快捷方式均清理。unpacked 与最终 Portable ZIP evidence 均通过严格 verifier；workspace-write 证明 `packaged-asar` RPC、`workspace-write` 权限、mock 鉴权、PowerShell tool-call、工具结果、第二轮 Provider、最终 nonce 和 Session 归档。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。Q3 因此取得 5 分；该 Server 结果仍不得作为 Windows 11 或性能证据。
 
 | 编号 | 工作项 | 总分 | 已得 |
 |---|---|---:|---:|
@@ -54,11 +56,11 @@
 | S3 | 安装、升级、快捷方式 | 2 | 1 |
 | Q1 | 单元测试 | 5 | 5 |
 | Q2 | 集成和故障 fixture | 5 | 4 |
-| Q3 | 打包后自动 E2E | 5 | 0 |
+| Q3 | 打包后自动 E2E | 5 | 5 |
 | Q4 | Windows 11、性能、兼容性 | 5 | 0 |
 | P1 | 品牌、仓库、Beta 发布基础 | 3 | 3 |
 | P2 | 准确文档、兼容矩阵、推广 | 2 | 1 |
-| **总计** |  | **100** | **74** |
+| **总计** |  | **100** | **79** |
 
 ## 3. Reuse Gate：不重复造轮子
 
@@ -348,7 +350,7 @@ npm run test:doctor
 npm run check
 ```
 
-当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 26 个 test files（279 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
+当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 26 个 test files（284 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
 
 后续阶段待新增（当前不可执行）：
 
@@ -361,7 +363,7 @@ npm run check
 
 ### 阶段 D：打包后自动 E2E，78% → 89%
 
-GitHub `windows-2025` 构建一次并复用产物。当前 workflow 已对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write 和十次启动，共 13 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。run `31823906216` 的 Portable 与 12/13 个安装版循环通过，但总门槛因一个 Electron 退出竞态失败；只有修复后的新 SHA 全部通过才完成本阶段。
+GitHub `windows-2025` 构建一次并复用产物。workflow 对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write 和十次启动，共 13 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。commit `c6801bca6d18d7309861677de44d995e6d21102d` 的 run `31857910840` 已全部通过，本阶段完成；这不包含阶段 E 的 Windows 11 与性能资格。
 
 ```powershell
 npm run build:ci
@@ -410,7 +412,7 @@ RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 
 
 ## 9. 打包、CI 与发布
 
-`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、安装版固定 13 循环、Portable ZIP 专项 E2E、证据上传和包体大小检查。当前尚无一轮修复后全绿的完整 packaged E2E，也没有性能合格证据；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成安装版/Portable E2E、SBOM、attestation 和 Release。
+`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、安装版固定 13 循环、Portable ZIP 专项 E2E、证据上传和包体大小检查。commit `c6801bca6d18d7309861677de44d995e6d21102d` 已有一轮完整全绿的 hardened packaged E2E，但仍没有 Windows 11 或性能合格证据；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成安装版/Portable E2E、SBOM、attestation 和 Release。
 
 所有 GitHub Actions 固定完整 commit SHA；Release workflow 增加 `concurrency` 和 `timeout-minutes`；不发布普通 CI 中未经当前 Release workflow 证明的二进制。缓存只包含 npm cache 和 SHA-256 已验证的 Node 官方压缩包，不缓存最终 Runtime closure、SBOM、证明或 Release 资产。
 

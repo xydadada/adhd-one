@@ -20,7 +20,7 @@
 gh attestation verify ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one
 ```
 
-兼容性：Windows 11 x64 是目标平台，但尚未在干净 Windows 11 环境验证。Windows Server 2025 的 hardened 验证等待下一次完整运行；在此之前不声称最终 hardened CI 已通过，也不能证明 Windows 11 兼容性。本版本是 prerelease，不能按 `v0.2.0` Stable 说明。此项目与 DeepSeek 无隶属或背书关系。
+兼容性：Windows 11 x64 是目标平台，但尚未在干净 Windows 11 环境验证。commit `c6801bca6d18d7309861677de44d995e6d21102d` 的 Windows Server 2025 hardened Quality run `31857910832` 与 Windows run `31857910840` 已通过，包括安装版 13/13 循环和最终 Portable ZIP E2E；这些结果不能证明 Windows 11 兼容性或性能合格。本版本是 prerelease，不能按 `v0.2.0` Stable 说明。此项目与 DeepSeek 无隶属或背书关系。
 
 ## English
 
@@ -38,4 +38,4 @@ These links provide the corresponding assets after the tag/Release is published.
 
 **Unsigned Windows build:** SmartScreen may display “Unknown publisher”. Compare the download with `SHA256SUMS.txt` or verify the GitHub Artifact Attestation before running the installer.
 
-Compatibility: Windows 11 x64 is the target platform, but it has not been verified in a clean Windows 11 environment. Windows Server 2025 hardened verification is pending the next full run; until it passes, no final hardened CI pass is claimed, and it would not establish Windows 11 compatibility anyway. This is a prerelease and must not be described as `v0.2.0` Stable. This project is not affiliated with or endorsed by DeepSeek.
+Compatibility: Windows 11 x64 is the target platform, but it has not been verified in a clean Windows 11 environment. Windows Server 2025 hardened Quality run `31857910832` and Windows run `31857910840` passed for commit `c6801bca6d18d7309861677de44d995e6d21102d`, including all 13 installed cycles and the final Portable ZIP E2E. These results do not establish Windows 11 compatibility or performance qualification. This is a prerelease and must not be described as `v0.2.0` Stable. This project is not affiliated with or endorsed by DeepSeek.

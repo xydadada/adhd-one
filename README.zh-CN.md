@@ -8,7 +8,7 @@
 | 兼容性 | 状态 |
 |---|---|
 | Windows 11 x64 | 目标平台；干净 Windows 11 验证尚未完成 |
-| Windows Server 2025 CI | hardened 验证等待下一次完整运行；不能作为 Windows 11 证据 |
+| Windows Server 2025 CI | run `31857910840` 的 hardened build、安装版 E2E 和 Portable ZIP E2E 已通过；不能作为 Windows 11 证据 |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | 发布状态 | 正在准备 `v0.2.0-beta.2` 预发布 |
 | 代码签名 | Windows 产物未签名；会触发 SmartScreen 提示 |
@@ -45,11 +45,11 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 
 ## 当前验证状态
 
-- Windows Server 2025 CI：run `31828488370` 的 build 和 Portable E2E 通过，但安装版 launch 发现 1 个延迟收敛进程，随后 NSIS 注册表 key 删除竞态覆盖了 summary。hardened 验证等待新的完整运行；Server 2025 结果不能作为 Windows 11 证据。
+- Windows Server 2025 CI：commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 和 Windows run `31857910840` 已全绿。构建、生产 Fuses、物理许可证闭包、unpacked Portable smoke、Portable ZIP E2E、安装版启动、强杀、真实 workspace-write/tool-call、连续十次启动、卸载和最终总门禁均通过。Server 2025 结果不能作为 Windows 11 证据。
 - Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
-- Packaged E2E：本地启动、强杀、workspace-write 和 Portable 检查已通过，并确认进程树清空；这些本地检查不是最终 hardened CI 证据。
-- 当前本地证据：`npm run check` 通过 26 个 test files（279 个通过，1 个 Windows 8.3 alias 回归因本卷没有独立短路径而跳过），JavaScript 语法门通过 21 个文件，`npm run test:doctor` 通过（20/20），真实 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。Setup 为 144.04 MiB；打包后二进制正常退出 3/3、force-kill 1/1、workspace-write 1/1、真实 Portable 模式 1/1 均通过且无残留 PID。workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。这些结果仍不代表 Windows 11、Stable、性能或完整安装后 Release E2E 已完成。
+- Packaged E2E：Windows Server 2025 hardened 套件已通过安装版 13/13 循环，以及 unpacked 和最终 Portable ZIP 检查。所有已验证退出均清空 Runtime 与应用进程树；workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。
+- 当前证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），JavaScript 语法、CodeQL、npm audit/signatures 和许可证策略也通过。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
 
 ## 本地开发
 

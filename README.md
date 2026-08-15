@@ -8,7 +8,7 @@
 | Compatibility | Status |
 |---|---|
 | Windows 11 x64 | Target platform; clean Windows 11 verification is pending |
-| Windows Server 2025 CI | Hardened verification is pending the next full run; this is not Windows 11 evidence |
+| Windows Server 2025 CI | Hardened build, installed E2E and Portable ZIP E2E passed on run `31857910840`; this is not Windows 11 evidence |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | Telemetry | Disabled by default |
 | Release status | `v0.2.0-beta.2` prerelease is being prepared |
@@ -40,11 +40,11 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 
 ## Verification status
 
-- Windows Server 2025 CI: run `31828488370` passed build and Portable E2E, but installed launch found one late scoped process and an NSIS registry-deletion race masked the summary. Hardened verification is pending a new full run. Server 2025 results are not Windows 11 evidence.
+- Windows Server 2025 CI: Quality run `31857910832` and Windows run `31857910840` passed on commit `c6801bca6d18d7309861677de44d995e6d21102d` (attempt 1). Build, production Fuses, physical license closure, unpacked Portable smoke, Portable ZIP E2E, installed launch, force-kill, real workspace-write/tool-call, ten consecutive starts, uninstall and the final all-jobs gate passed. Server 2025 results are not Windows 11 evidence.
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
-- Packaged E2E: local launch, force-kill, workspace-write, and Portable checks passed with process-tree cleanup; these local checks are not final hardened CI evidence.
-- Current local evidence: `npm run check` passed 26 test files (279 passed, 1 Windows 8.3-alias regression skipped because this volume exposes no distinct alias), the JavaScript syntax gate passed 21 files, `npm run test:doctor` passed 20/20, and `npm run smoke:runtime-staging` passed with `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`. Setup is 144.04 MiB; packaged launch 3/3, force-kill 1/1, workspace-write 1/1, and real Portable mode 1/1 passed with no remaining child PID. The workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution, and session archival. This does not establish Windows 11, Stable, performance, or the complete installed release E2E.
+- Packaged E2E: the hardened Windows Server 2025 suite passed 13/13 installed cycles plus unpacked and final Portable ZIP checks. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
+- Current evidence: `npm run check` and CI passed 26 test files (284 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), plus JavaScript syntax, CodeQL, npm audit/signatures and license policy. Setup is 151,012,081 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
 
 ## Development
 

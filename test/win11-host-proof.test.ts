@@ -181,7 +181,7 @@ describe('Windows 11 host and executable proof collector', () => {
   });
 
   it('does not expose input values in validation errors', async () => {
-    const secretPath = 'C:\\Users\\Alice\\private\\not-adhd.exe';
+    const secretPath = path.resolve(os.tmpdir(), 'Alice', 'private', 'not-adhd.exe');
     const error = await collectExecutableProof(secretPath).catch(value => value as ProofError);
     expect(error).toBeInstanceOf(Win11HostProofError);
     expect(error.code).toBe(ERROR.EXECUTABLE_NAME_INVALID);

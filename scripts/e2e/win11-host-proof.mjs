@@ -159,8 +159,14 @@ async function inspectExecutable(executablePath, operations, checkCanonicalPath)
     } catch {
       fail(WIN11_HOST_PROOF_ERRORS.EXECUTABLE_PATH_INVALID);
     }
-    if (typeof canonicalPath !== 'string' || comparablePath(canonicalPath) !== comparablePath(executablePath)) {
-      fail(WIN11_HOST_PROOF_ERRORS.EXECUTABLE_REPARSE);
+    if (typeof canonicalPath !== 'string') fail(WIN11_HOST_PROOF_ERRORS.EXECUTABLE_PATH_INVALID);
+    if (comparablePath(canonicalPath) !== comparablePath(executablePath)) {
+      let canonicalStats;
+      try { canonicalStats = await operations.lstat(canonicalPath); }
+      catch { fail(WIN11_HOST_PROOF_ERRORS.EXECUTABLE_REPARSE); }
+      const sameIdentity = typeof stats.dev === 'number' && typeof stats.ino === 'number'
+        && stats.ino !== 0 && canonicalStats?.dev === stats.dev && canonicalStats?.ino === stats.ino;
+      if (!sameIdentity) fail(WIN11_HOST_PROOF_ERRORS.EXECUTABLE_REPARSE);
     }
   }
 }

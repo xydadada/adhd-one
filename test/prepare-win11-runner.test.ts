@@ -251,15 +251,17 @@ describe('Win11 runner preparation', () => {
 
 describe('Win11 runner CLI', () => {
   it('parses --output/--node and exposes --help without touching the repository', () => {
-    const parsed = parseRunnerArgs(['--output', 'C:\\outside\\runner', '--node=C:\\outside\\tools\\node.exe']);
+    const absoluteOutput = path.resolve(os.tmpdir(), 'outside', 'runner');
+    const absoluteNode = path.resolve(os.tmpdir(), 'outside', 'tools', 'node.exe');
+    const parsed = parseRunnerArgs(['--output', absoluteOutput, `--node=${absoluteNode}`]);
     expect(parsed).toEqual({
       help: false,
-      output: path.normalize('C:\\outside\\runner'),
-      node: path.normalize('C:\\outside\\tools\\node.exe')
+      output: path.normalize(absoluteOutput),
+      node: path.normalize(absoluteNode)
     });
-    expect(() => parseRunnerArgs(['--output', 'runner', '--node', 'C:\\outside\\node.exe']))
+    expect(() => parseRunnerArgs(['--output', 'runner', '--node', absoluteNode]))
       .toThrow(WIN11_RUNNER_ERROR_CODES.CLI_USAGE);
-    expect(() => parseRunnerArgs(['--output', 'C:\\outside\\runner', '--node', 'node.exe']))
+    expect(() => parseRunnerArgs(['--output', absoluteOutput, '--node', 'node.exe']))
       .toThrow(WIN11_RUNNER_ERROR_CODES.CLI_USAGE);
 
     const script = path.resolve('scripts', 'prepare-win11-runner.mjs');

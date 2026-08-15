@@ -35,8 +35,13 @@ jobs:
       - run: npm ci --ignore-scripts --prefix runtime
       - run: npm run audit:signatures
       - run: npm run check
-      - name: Generate and check physical license closure
-        run: npm run license:closure:gate
+      - name: Cache electron-builder download tools
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-builder-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-builder-
       - run: npm run build:win
       - name: Verify real electron-updater feed and SHA-512 consumer path
         run: npm run e2e:updater-feed

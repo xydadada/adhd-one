@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const workflowPath = path.resolve('.github', 'workflows', 'windows.yml');
+const packageJsonPath = path.resolve('package.json');
 const installedScriptPath = path.resolve('scripts', 'e2e', 'installed.ps1');
 
 describe('Windows verification workflow', () => {
@@ -16,6 +17,30 @@ describe('Windows verification workflow', () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow).toContain('npm run smoke:runtime-update');
     expect(workflow.indexOf('npm run smoke:runtime-update')).toBeGreaterThan(workflow.indexOf('npm run build:win'));
+  });
+
+  it('leaves the license closure gate inside build:win', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(workflow).not.toContain('npm run license:closure:gate');
+    expect(packageJson.scripts?.['build:win']).toContain('npm run license:closure:gate');
+  });
+
+  it('caches only the Windows electron-builder download tools with a full SHA pin', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const cacheStart = workflow.indexOf('      - name: Cache electron-builder download tools');
+    const buildStart = workflow.indexOf('      - run: npm run build:win');
+    const cacheStep = workflow.slice(cacheStart, buildStart);
+
+    expect(cacheStart).toBeGreaterThanOrEqual(0);
+    expect(buildStart).toBeGreaterThan(cacheStart);
+    expect(cacheStep).toMatch(/uses: actions\/cache@[0-9a-f]{40}(?:\s+# v[^\r\n]+)?\r?\n/u);
+    expect(cacheStep).toContain('path: ~\\AppData\\Local\\electron-builder\\Cache');
+    expect(cacheStep).toContain("key: ${{ runner.os }}-electron-builder-${{ hashFiles('**/package-lock.json') }}");
+    expect(cacheStep).not.toMatch(/\bdist\b|\.exe\b|\.zip\b|latest\.yml/u);
   });
 
   it('runs the real electron-updater feed gate after the shared build', async () => {

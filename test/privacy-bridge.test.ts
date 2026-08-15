@@ -135,8 +135,6 @@ describe('privacy-safe IPC bridge', () => {
     await expect(invoke('app:quit')).resolves.toEqual({ accepted: true });
     await expect(invoke('runtime:restart')).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
     expect(runtime.restart).not.toHaveBeenCalled();
-    expect(windows.quit).not.toHaveBeenCalled();
-    await new Promise<void>(resolve => setImmediate(resolve));
     expect(windows.quit).toHaveBeenCalledOnce();
   });
 

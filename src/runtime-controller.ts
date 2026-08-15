@@ -327,8 +327,16 @@ export class RuntimeController extends EventEmitter {
       code => ({ kind: 'exit' as const, code }),
       error => ({ kind: 'wait-failed' as const, error })
     );
-    const timeout = new Promise<{ kind: 'timeout' }>(resolve => setTimeout(() => resolve({ kind: 'timeout' }), 45_000));
-    const outcome = await Promise.race([ready, exited, timeout]);
+    let startupTimer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<{ kind: 'timeout' }>(resolve => {
+      startupTimer = setTimeout(() => resolve({ kind: 'timeout' }), 45_000);
+    });
+    let outcome: Awaited<typeof ready> | Awaited<typeof exited> | { kind: 'timeout' };
+    try {
+      outcome = await Promise.race([ready, exited, timeout]);
+    } finally {
+      if (startupTimer) clearTimeout(startupTimer);
+    }
     if (outcome.kind !== 'ready') {
       await this.terminateAndRelease(child);
       if (this.cancelled(intent)) return this.cancelledSnapshot();
@@ -567,6 +575,7 @@ export class RuntimeController extends EventEmitter {
 
   private handleUnexpectedExit(child: ManagedProcess, generation: number, code: number, detail?: string): void {
     const current = this.process === child;
+    if (current && (this.stopping || this.stopRequested)) return;
     child.close();
     if (current) this.clearHandles(child);
     if (!current || this.stopping || this.stopRequested || generation !== this.snapshotValue.generation || this.snapshotValue.state !== 'ready') return;

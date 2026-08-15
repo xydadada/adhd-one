@@ -81,6 +81,7 @@ export class QuitCoordinator {
   }
 
   private async coordinate(requestedExitCode: number | undefined): Promise<void> {
+    const hardDeadline = Date.now() + RUNTIME_STOP_TIMEOUT_MS;
     try { this.dependencies.windows.prepareToQuit?.(); } catch { /* continue shutdown */ }
 
     let stopped = false;
@@ -93,7 +94,7 @@ export class QuitCoordinator {
     try { this.dependencies.windows.destroyForQuit(); } catch { /* continue shutdown */ }
     // Arm the last-resort exit before entering Electron's native shutdown.
     // app.exit() may not return control to JavaScript on every Windows exit path.
-    this.scheduleHardExit(exitCode);
+    this.scheduleHardExit(exitCode, Math.min(this.hardExitDelayMs, Math.max(0, hardDeadline - Date.now())));
     try { this.dependencies.appExit(exitCode); } catch { /* hardExit remains available */ }
   }
 
@@ -116,14 +117,14 @@ export class QuitCoordinator {
     }
   }
 
-  private scheduleHardExit(exitCode: number): void {
+  private scheduleHardExit(exitCode: number, delay = this.hardExitDelayMs): void {
     if (this.electronExited || this.dependencies.isElectronExited?.()) return;
     this.fallbackTimer = this.schedule(() => {
       this.fallbackTimer = undefined;
       if (this.electronExited || this.dependencies.isElectronExited?.() || this.hardExitCalled) return;
       this.hardExitCalled = true;
       try { this.dependencies.hardExit(exitCode); } catch { /* last-resort attempt is complete */ }
-    }, this.hardExitDelayMs);
+    }, delay);
   }
 }
 

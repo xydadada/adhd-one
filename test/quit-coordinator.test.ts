@@ -95,6 +95,25 @@ describe('QuitCoordinator', () => {
     expect(fixture.calls).toEqual(['prepareToQuit', 'forceShutdown', 'destroyForQuit', 'appExit:1']);
   });
 
+  it('keeps the hard-exit fallback inside the original five-second budget', async () => {
+    vi.useFakeTimers();
+    const runtime = {
+      stop: vi.fn(() => new Promise<void>(resolve => setTimeout(resolve, 4_500))),
+      forceShutdown: vi.fn()
+    };
+    const fixture = createFixture({ runtime });
+
+    const quit = fixture.coordinator.quit();
+    await vi.advanceTimersByTimeAsync(4_500);
+    await quit;
+    expect(fixture.appExit).toHaveBeenCalledWith(0);
+    expect(fixture.hardExit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fixture.hardExit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.hardExit).toHaveBeenCalledWith(0);
+  });
+
   it('treats a rejected runtime stop as a failure and preserves an explicit exit code', async () => {
     vi.useFakeTimers();
     const fixture = createFixture({ runtime: {

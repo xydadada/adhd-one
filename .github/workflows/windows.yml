@@ -38,6 +38,8 @@ jobs:
       - name: Generate and check physical license closure
         run: npm run license:closure:gate
       - run: npm run build:win
+      - name: Verify archive through the real Runtime update staging path
+        run: npm run smoke:runtime-update
       - name: Verify packaged license closure carrier
         run: node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked
       - run: npm run verify:fuses -- "dist/win-unpacked/ADHD One.exe"

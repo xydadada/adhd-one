@@ -476,14 +476,20 @@ export class RuntimeController extends EventEmitter {
       slot: 'bundled', version: DSH_VERSION, candidate: false
     };
     const stateFile = path.join(this.paths.runtimes, 'runtime-state.json');
+    let state: { active?: 'A' | 'B'; version?: string; healthy?: boolean; candidate?: boolean };
     try {
-      const state = JSON.parse(await readFile(stateFile, 'utf8')) as { active?: 'A' | 'B'; version?: string; healthy?: boolean };
-      if ((state.active !== 'A' && state.active !== 'B') || typeof state.version !== 'string') return bundled;
+      state = JSON.parse(await readFile(stateFile, 'utf8')) as typeof state;
+    } catch { return bundled; }
+    if ((state.active !== 'A' && state.active !== 'B') || typeof state.version !== 'string') return bundled;
+    try {
       const slotRoot = path.join(this.paths.runtimes, `slot-${state.active}`);
       const dshPackage = JSON.parse(await readFile(path.join(slotRoot, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')) as { version?: string };
-      if (dshPackage.version !== state.version) return bundled;
-      return { root: path.join(slotRoot, 'dsh-runtime'), node: path.join(slotRoot, 'node-runtime', 'node.exe'), slot: state.active, version: state.version, candidate: state.healthy !== true };
-    } catch { return bundled; }
+      if (dshPackage.version === state.version) {
+        return { root: path.join(slotRoot, 'dsh-runtime'), node: path.join(slotRoot, 'node-runtime', 'node.exe'), slot: state.active, version: state.version, candidate: state.candidate === true || state.healthy !== true };
+      }
+    } catch { /* Persist rollback below instead of retrying a broken active slot forever. */ }
+    if (await this.rollbackCandidate(state.active, true)) return this.selectRuntime();
+    throw new Error('RUNTIME_SLOT_INVALID_ROLLBACK_FAILED');
   }
 
   private async recoverPendingRuntimeCommit(): Promise<void> {
@@ -508,7 +514,14 @@ export class RuntimeController extends EventEmitter {
     const stateFile = path.join(this.paths.runtimes, 'runtime-state.json');
     const state = JSON.parse(await readFile(stateFile, 'utf8')) as Record<string, unknown>;
     if (state.active !== slot || state.version !== version) return;
-    await writeFileAtomic(stateFile, JSON.stringify({ ...state, healthy: true }) + '\n');
+    await writeFileAtomic(stateFile, JSON.stringify({ ...state, healthy: true, candidate: true, healthyAt: new Date().toISOString() }) + '\n');
+  }
+
+  private async markRuntimeStable(slot: 'A' | 'B', version: string): Promise<void> {
+    const stateFile = path.join(this.paths.runtimes, 'runtime-state.json');
+    const state = JSON.parse(await readFile(stateFile, 'utf8')) as Record<string, unknown>;
+    if (state.active !== slot || state.version !== version || state.candidate !== true) return;
+    await writeFileAtomic(stateFile, JSON.stringify({ ...state, healthy: true, candidate: false, stableAt: new Date().toISOString() }) + '\n');
   }
 
   private async rollbackCandidate(slot: 'A' | 'B', allowHealthy = false): Promise<boolean> {
@@ -518,9 +531,9 @@ export class RuntimeController extends EventEmitter {
       if (state.active !== slot || (state.healthy === true && !allowHealthy)) return false;
       if (state.previous === 'A' || state.previous === 'B') {
         const previousPackage = JSON.parse(await readFile(path.join(this.paths.runtimes, `slot-${state.previous}`, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8')) as { version?: string };
-        await writeFileAtomic(stateFile, JSON.stringify({ schemaVersion: 1, active: state.previous, previous: 'bundled', version: previousPackage.version, healthy: true, rolledBackFrom: slot }) + '\n');
+        await writeFileAtomic(stateFile, JSON.stringify({ schemaVersion: 1, active: state.previous, previous: 'bundled', version: previousPackage.version, healthy: true, candidate: false, rolledBackFrom: slot }) + '\n');
       } else {
-        await writeFileAtomic(stateFile, JSON.stringify({ schemaVersion: 1, active: 'bundled', previous: slot, version: DSH_VERSION, healthy: true, rolledBackFrom: slot }) + '\n');
+        await writeFileAtomic(stateFile, JSON.stringify({ schemaVersion: 1, active: 'bundled', previous: slot, version: DSH_VERSION, healthy: true, candidate: false, rolledBackFrom: slot }) + '\n');
       }
       this.emit('rolled-back', { from: slot });
       return true;
@@ -631,7 +644,14 @@ export class RuntimeController extends EventEmitter {
         this.crashTimes = [];
         if (this.crashWindowTimer) clearTimeout(this.crashWindowTimer);
         this.crashWindowTimer = undefined;
-        if (this.candidateGeneration === generation) this.clearCandidateProbation();
+        if (this.candidateGeneration === generation && this.candidateSlot) {
+          const slot = this.candidateSlot;
+          const version = this.snapshotValue.runtimeVersion;
+          void this.markRuntimeStable(slot, version)
+            .then(() => this.emit('stable', this.snapshot()))
+            .catch(() => undefined);
+          this.clearCandidateProbation(slot);
+        }
         this.setSnapshot({ restartAttempt: 0 });
       }
     }, 600_000);

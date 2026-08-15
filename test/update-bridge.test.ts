@@ -35,6 +35,7 @@ function createBridge(options: {
   appCandidateVersion?: string;
 } = {}) {
   const calls: string[] = [];
+  let appPhase = options.appPhase ?? 'available';
   const runtime = {
     start: vi.fn(async () => { calls.push('runtime.start'); }),
     stop: vi.fn(async () => { calls.push('runtime.stop'); }),
@@ -45,13 +46,13 @@ function createBridge(options: {
     isPortable: vi.fn(() => options.portable ?? false),
     snapshot: vi.fn((target: string) => target === 'app'
       ? {
-        target: 'app', channel: 'stable', phase: options.appPhase ?? 'available', currentVersion: '0.2.0',
+        target: 'app', channel: 'stable', phase: appPhase, currentVersion: '0.2.0',
         ...(options.appCandidateVersion === undefined ? { candidateVersion: '1.2.3' } : { candidateVersion: options.appCandidateVersion }),
-        canConfirm: (options.appPhase ?? 'available') === 'available', canInstall: false, rollback: false
+        canConfirm: appPhase === 'available', canInstall: appPhase === 'verified', rollback: false
       }
       : { target: 'runtime', channel: 'stable', phase: 'available', currentVersion: '0.1.0', candidateVersion: '2.0.0', canConfirm: true, canInstall: false, rollback: false }),
     check: vi.fn(),
-    confirm: vi.fn(async () => { calls.push('confirm'); }),
+    confirm: vi.fn(async (target: string) => { calls.push('confirm'); if (target === 'app') appPhase = 'verified'; }),
     quitAndInstall: vi.fn(() => { calls.push('quitAndInstall'); })
   };
   const windows = {
@@ -108,13 +109,19 @@ describe('SecureBridge update IPC', () => {
     expect(runtime.stop).not.toHaveBeenCalled();
   });
 
-  it('runs installed app update actions in confirm-stop-install order', async () => {
+  it('requires separate download verification and installation confirmations', async () => {
     const { invoke, calls, updates, runtime } = createBridge();
 
     await invoke('app');
 
-    expect(calls).toEqual(['confirm', 'runtime.stop', 'quitAndInstall']);
+    expect(calls).toEqual(['confirm']);
     expect(updates.confirm).toHaveBeenCalledWith('app');
+    expect(runtime.stop).not.toHaveBeenCalled();
+    expect(updates.quitAndInstall).not.toHaveBeenCalled();
+
+    await invoke('app');
+
+    expect(calls).toEqual(['confirm', 'runtime.stop', 'quitAndInstall']);
     expect(runtime.stop).toHaveBeenCalledOnce();
     expect(updates.quitAndInstall).toHaveBeenCalledOnce();
   });
@@ -134,7 +141,7 @@ describe('SecureBridge update IPC', () => {
   });
 
   it('restarts the runtime after quitAndInstall fails and exposes only APP_INSTALL_FAILED', async () => {
-    const { invoke, calls, updates, runtime } = createBridge();
+    const { invoke, calls, updates, runtime } = createBridge({ appPhase: 'verified' });
     updates.quitAndInstall.mockImplementation(() => {
       calls.push('quitAndInstall');
       throw new Error('private updater detail');
@@ -149,8 +156,18 @@ describe('SecureBridge update IPC', () => {
 
     expect(rejection).toBeInstanceOf(Error);
     expect((rejection as Error).message).toBe('APP_INSTALL_FAILED');
-    expect(calls).toEqual(['confirm', 'runtime.stop', 'quitAndInstall', 'runtime.start']);
+    expect(calls).toEqual(['runtime.stop', 'quitAndInstall', 'runtime.start']);
     expect(runtime.start).toHaveBeenCalledOnce();
+  });
+
+  it('does not invoke the installer when stopping the runtime fails', async () => {
+    const { invoke, updates, runtime } = createBridge({ appPhase: 'verified' });
+    runtime.stop.mockRejectedValueOnce(new Error('private stop detail'));
+
+    await expect(invoke('app')).rejects.toThrow('APP_INSTALL_FAILED');
+
+    expect(updates.quitAndInstall).not.toHaveBeenCalled();
+    expect(runtime.start).not.toHaveBeenCalled();
   });
 
   it('runs runtime update actions in confirm-restart order', async () => {

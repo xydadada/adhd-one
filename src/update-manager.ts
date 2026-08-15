@@ -30,6 +30,16 @@ import {
 
 const updater = () => updaterPackage.autoUpdater;
 const execFileAsync = promisify(execFile);
+const DSH_RPC_PROTOCOL_VERSION = '1.0.0';
+
+export interface AppUpdaterAdapter {
+  autoDownload: boolean;
+  autoInstallOnAppQuit: boolean;
+  allowPrerelease: boolean;
+  checkForUpdates(): Promise<unknown>;
+  downloadUpdate(): Promise<string[]>;
+  quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
+}
 
 const manifestSchema = z.object({
   schemaVersion: z.literal(1), channel: z.enum(['stable', 'preview']), generatedAt: z.iso.datetime(),
@@ -71,7 +81,8 @@ const runtimeStateSchema = z.object({
   active: z.enum(['A', 'B', 'bundled']).optional(),
   previous: z.enum(['A', 'B', 'bundled']).optional(),
   version: z.string().optional(),
-  healthy: z.boolean().optional()
+  healthy: z.boolean().optional(),
+  candidate: z.boolean().optional()
 }).passthrough();
 
 const runtimeStateFileName = 'runtime-state.json';
@@ -132,6 +143,10 @@ export function parseRuntimeManifest(value: unknown, channel: 'stable' | 'previe
   const parsed = manifestSchema.parse(value) as RuntimeManifestV1;
   if (parsed.channel !== channel) throw new Error('RUNTIME_CHANNEL_MISMATCH');
   if (!semver.valid(parsed.runtime.version) || !semver.valid(parsed.minAppVersion)) throw new Error('INVALID_RUNTIME_SEMVER');
+  if (!semver.validRange(parsed.runtime.protocolCompatibility)
+    || !semver.satisfies(DSH_RPC_PROTOCOL_VERSION, parsed.runtime.protocolCompatibility)) {
+    throw new Error('DSH_PROTOCOL_INCOMPATIBLE');
+  }
   if (channel === 'stable' && semver.prerelease(parsed.runtime.version)) throw new Error('PRERELEASE_ON_STABLE');
   if (appVersion && (!semver.valid(appVersion) || semver.lt(appVersion, parsed.minAppVersion))) throw new Error('APP_VERSION_TOO_OLD');
   try { trustedGithubUrl(parsed.asset.url); } catch { throw new Error('UNTRUSTED_RUNTIME_ASSET'); }
@@ -148,11 +163,12 @@ export function isRuntimeUpgrade(candidate: string, current: string): boolean {
   return Boolean(semver.valid(candidate) && semver.valid(current) && semver.gt(candidate, current));
 }
 
-export function selectRuntimeInstallSlots(current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean }): { slot: 'A' | 'B'; previous: 'A' | 'B' | 'bundled' } {
+export function selectRuntimeInstallSlots(current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean; candidate?: boolean }): { slot: 'A' | 'B'; previous: 'A' | 'B' | 'bundled' } {
   const activeSlot = current.active === 'A' || current.active === 'B' ? current.active : undefined;
-  const slot: 'A' | 'B' = activeSlot && current.healthy === false ? activeSlot : activeSlot === 'A' ? 'B' : 'A';
+  const pendingCandidate = Boolean(activeSlot && (current.healthy === false || current.candidate === true));
+  const slot: 'A' | 'B' = pendingCandidate ? activeSlot! : activeSlot === 'A' ? 'B' : 'A';
   const previous = current.active === 'bundled' ? 'bundled'
-    : activeSlot && current.healthy === true ? activeSlot : current.previous ?? 'bundled';
+    : activeSlot && !pendingCandidate && current.healthy === true ? activeSlot : current.previous ?? 'bundled';
   return { slot, previous };
 }
 
@@ -230,16 +246,17 @@ export class UpdateManager extends EventEmitter {
     private readonly paths: UpdatePaths,
     private readonly appVersion: string,
     private readonly manifestUrl: string,
-    private readonly portable = false
+    private readonly portable = false,
+    private readonly appUpdater: AppUpdaterAdapter = updater()
   ) {
     super();
     this.snapshots = new Map<UpdateTarget, UpdateSnapshotV2>([
       ['app', { target: 'app', channel: 'stable', phase: 'idle', currentVersion: appVersion, canConfirm: false, canInstall: false, rollback: false }],
       ['runtime', { target: 'runtime', channel: 'stable', phase: 'idle', currentVersion: DSH_VERSION, canConfirm: false, canInstall: false, rollback: false }]
     ]);
-    updater().autoDownload = false;
-    updater().autoInstallOnAppQuit = false;
-    updater().allowPrerelease = false;
+    this.appUpdater.autoDownload = false;
+    this.appUpdater.autoInstallOnAppQuit = false;
+    this.appUpdater.allowPrerelease = false;
   }
   snapshot(target: UpdateTarget): UpdateSnapshotV2 { return structuredClone(this.snapshots.get(target)!); }
   private set(target: UpdateTarget, patch: Partial<Omit<UpdateSnapshotV2, 'target' | 'canConfirm' | 'canInstall'>>): void {
@@ -284,9 +301,9 @@ export class UpdateManager extends EventEmitter {
     });
     try {
       if (target === 'app') {
-        updater().allowPrerelease = channel === 'preview';
-        const result = await updater().checkForUpdates();
-        const updateInfo = result?.updateInfo as (NonNullable<typeof result>['updateInfo'] & { tag?: unknown }) | undefined;
+        this.appUpdater.allowPrerelease = channel === 'preview';
+        const result = await this.appUpdater.checkForUpdates() as { updateInfo?: { version?: string; tag?: unknown; files: Array<{ url: string }> } } | null;
+        const updateInfo = result?.updateInfo;
         const version = updateInfo?.version;
         if (this.checkGenerations.get(target) !== generation) return this.snapshot(target);
         if (version && semver.valid(version) && semver.gt(version, this.appVersion)) {
@@ -331,7 +348,7 @@ export class UpdateManager extends EventEmitter {
       if (!candidate || candidate.generation !== this.checkGenerations.get('app')
         || this.snapshot('app').candidateVersion !== candidate.version) throw new Error('APP_UPDATE_METADATA_MISSING');
       this.set(target, { phase: 'downloading' });
-      const result = await updater().downloadUpdate();
+      const result = await this.appUpdater.downloadUpdate();
       const filename = result[0]; if (!filename) throw new Error('UPDATE_FILE_MISSING');
       if (path.basename(filename) !== candidate.assetName) throw new Error('UPDATE_ASSET_NAME_MISMATCH');
       const assetName = path.basename(filename);
@@ -389,19 +406,21 @@ export class UpdateManager extends EventEmitter {
     await mkdir(this.paths.runtimes, { recursive: true });
     const stateFile = path.join(this.paths.runtimes, runtimeStateFileName);
     let beforeState: RuntimeCommitState | null = null;
-    let current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean } = {};
+    let current: { active?: 'A' | 'B' | 'bundled'; previous?: 'A' | 'B' | 'bundled'; healthy?: boolean; candidate?: boolean } = {};
     try {
       const parsed = JSON.parse(await readFile(stateFile, 'utf8')) as unknown;
       const validated = z.object({
         active: z.enum(['A', 'B', 'bundled']).optional(),
         previous: z.enum(['A', 'B', 'bundled']).optional(),
-        healthy: z.boolean().optional()
+        healthy: z.boolean().optional(),
+        candidate: z.boolean().optional()
       }).passthrough().parse(parsed);
       beforeState = validated as RuntimeCommitState;
       current = {
         ...(validated.active !== undefined ? { active: validated.active } : {}),
         ...(validated.previous !== undefined ? { previous: validated.previous } : {}),
-        ...(validated.healthy !== undefined ? { healthy: validated.healthy } : {})
+        ...(validated.healthy !== undefined ? { healthy: validated.healthy } : {}),
+        ...(validated.candidate !== undefined ? { candidate: validated.candidate } : {})
       };
     } catch (error) {
       if (!isMissingPathError(error)) throw new Error('RUNTIME_STATE_INVALID', { cause: error });
@@ -474,7 +493,9 @@ export class UpdateManager extends EventEmitter {
         active: slot,
         previous: previousHealthy,
         version: manifest.runtime.version,
-        healthy: false
+        healthy: false,
+        candidate: true,
+        installedAt: new Date().toISOString()
       };
       const journal = createRuntimeCommitJournal({
         txid,
@@ -507,14 +528,23 @@ export class UpdateManager extends EventEmitter {
       const state = runtimeStateSchema.parse(JSON.parse(await readFile(path.join(this.paths.runtimes, runtimeStateFileName), 'utf8')));
       const currentVersion = state.healthy === true && state.version && semver.valid(state.version) ? state.version : DSH_VERSION;
       const previous = state.previous ?? 'bundled';
-      const rollback = (state.active === 'A' || state.active === 'B') && state.healthy === false
+      const rollback = (state.active === 'A' || state.active === 'B') && (state.healthy === false || state.candidate === true)
         && Boolean(state.version && semver.valid(state.version)) && previous !== state.active;
       return { currentVersion, rollback };
     } catch { return { currentVersion: DSH_VERSION, rollback: false }; }
   }
+  async refreshRuntimeStatus(): Promise<UpdateSnapshotV2> {
+    const status = await this.currentRuntimeStatus();
+    this.set('runtime', {
+      currentVersion: status.currentVersion,
+      rollback: status.rollback,
+      ...(!status.rollback ? { phase: 'idle' as const, candidateVersion: undefined } : {})
+    });
+    return this.snapshot('runtime');
+  }
   isPortable(): boolean { return this.portable; }
   quitAndInstall(): void {
     if (this.portable || !this.snapshot('app').canInstall) throw new Error('APP_UPDATE_NOT_VERIFIED');
-    updater().quitAndInstall(false, true);
+    this.appUpdater.quitAndInstall(false, true);
   }
 }

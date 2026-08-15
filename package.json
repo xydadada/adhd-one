@@ -28,6 +28,7 @@
     "smoke:runtime": "npm run smoke",
     "smoke:runtime-archive": "node scripts/smoke-runtime-archive.mjs",
     "smoke:runtime-staging": "node scripts/smoke-runtime-staging.mjs",
+    "smoke:runtime-update": "node scripts/smoke-runtime-update.mjs",
     "verify:fuses": "node scripts/verify-fuses.mjs",
     "verify:package-closure": "node scripts/verify-package-closure.mjs",
     "verify:evidence": "node scripts/verify-evidence.mjs",

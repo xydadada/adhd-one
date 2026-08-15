@@ -5,6 +5,15 @@ import { describe, expect, it } from 'vitest';
 const workflowPath = path.resolve('.github', 'workflows', 'release.yml');
 
 describe('release workflow identity gates', () => {
+  it('gates release metadata on the real Runtime update staging smoke', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const build = workflow.indexOf('npm run build:win');
+    const updateSmoke = workflow.indexOf('npm run smoke:runtime-update');
+    const metadata = workflow.indexOf('Generate runtime manifest and checksums');
+    expect(updateSmoke).toBeGreaterThan(build);
+    expect(metadata).toBeGreaterThan(updateSmoke);
+  });
+
   it('binds release notes to the complete tag or version', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow).toContain('The first RELEASE_NOTES.md heading must contain the complete release tag/version');

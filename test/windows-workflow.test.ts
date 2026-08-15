@@ -6,6 +6,12 @@ const workflowPath = path.resolve('.github', 'workflows', 'windows.yml');
 const installedScriptPath = path.resolve('scripts', 'e2e', 'installed.ps1');
 
 describe('Windows verification workflow', () => {
+  it('runs the real Runtime update staging smoke after the shared build', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    expect(workflow).toContain('npm run smoke:runtime-update');
+    expect(workflow.indexOf('npm run smoke:runtime-update')).toBeGreaterThan(workflow.indexOf('npm run build:win'));
+  });
+
   it('builds Windows artifacts exactly once', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow.match(/npm run build:win/gu)).toHaveLength(1);

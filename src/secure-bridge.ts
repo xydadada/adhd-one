@@ -107,7 +107,11 @@ export function installSecureBridge(input: {
       throw stableError(error, CHANNEL_FALLBACK_CODES[channel] ?? 'IPC_OPERATION_FAILED');
     }
   });
-  handle('app:snapshot', () => ({ appVersion: app.getVersion(), runtime: input.runtime.snapshot(), workspace: input.settings.get().workspace }), { allowDuringQuit: true });
+  handle('app:snapshot', () => ({
+    appVersion: app.getVersion(), portable: input.updates.isPortable(), runtime: input.runtime.snapshot(),
+    updates: { app: input.updates.snapshot('app'), runtime: input.updates.snapshot('runtime') },
+    workspace: input.settings.get().workspace
+  }), { allowDuringQuit: true });
   handle('app:quit', () => {
     quitState.beginQuit();
     setImmediate(() => void input.windows.quit());
@@ -156,14 +160,20 @@ export function installSecureBridge(input: {
       if (!snapshot.canConfirm || !snapshot.candidateVersion) throw new Error('UPDATE_NOT_AVAILABLE');
       assertActive();
       await shell.openExternal(`https://github.com/xydadada/adhd-one/releases/tag/v${encodeURIComponent(snapshot.candidateVersion)}`);
-      return;
+      return snapshot;
     }
-    try { assertActive(); await input.updates.confirm(target); }
-    catch { assertActive(); throw new Error('UPDATE_CONFIRM_FAILED'); }
-    assertActive();
     if (target === 'app') {
+      const snapshot = input.updates.snapshot('app');
+      if (!snapshot.canInstall) {
+        if (!snapshot.canConfirm) throw new Error('UPDATE_NOT_AVAILABLE');
+        try { assertActive(); await input.updates.confirm('app'); }
+        catch { assertActive(); throw new Error('UPDATE_CONFIRM_FAILED'); }
+        assertActive();
+        return input.updates.snapshot('app');
+      }
       assertActive();
-      await input.runtime.stop();
+      try { await input.runtime.stop(); }
+      catch { assertActive(); throw new Error('APP_INSTALL_FAILED'); }
       assertActive();
       try {
         assertActive();
@@ -179,10 +189,14 @@ export function installSecureBridge(input: {
         throw new Error('APP_INSTALL_FAILED');
       }
     } else {
+      try { assertActive(); await input.updates.confirm('runtime'); }
+      catch { assertActive(); throw new Error('UPDATE_CONFIRM_FAILED'); }
+      assertActive();
       assertActive();
       try {
         await input.runtime.restart();
         assertActive();
+        return input.updates.snapshot('runtime');
       } catch (error) {
         assertActive();
         throw error;

@@ -64,7 +64,7 @@ function createBridge() {
     confirm: vi.fn(async () => undefined),
     isPortable: vi.fn(() => false),
     quitAndInstall: vi.fn(),
-    snapshot: vi.fn(() => ({ canConfirm: false }))
+    snapshot: vi.fn(() => ({ phase: 'verified', canConfirm: false, canInstall: true }))
   };
   const doctor = { cancel: vi.fn(), report: vi.fn(), run: vi.fn(async () => ({})) };
   const windows = {
@@ -254,6 +254,17 @@ describe('privacy-safe IPC bridge', () => {
 });
 
 describe('privacy-safe tray notifications and renderer errors', () => {
+  it('forwards update state to the ControlWindow without exposing extra data', () => {
+    const manager = new WindowManager({} as never, 'C:\\app', 'adhd-one://app/index.html', {} as never, {} as never, { data: 'data', logs: 'logs' }, true);
+    const send = vi.fn();
+    (manager as unknown as { control: unknown }).control = { webContents: { send } };
+    const update = { target: 'app', channel: 'stable', phase: 'verified', currentVersion: '0.2.0', candidateVersion: '0.2.1', canConfirm: false, canInstall: true, rollback: false };
+
+    (manager as unknown as { onUpdate(value: unknown): void }).onUpdate(update);
+
+    expect(send).toHaveBeenCalledWith('update:changed', update);
+  });
+
   it('does not put a raw shell error into a tray notification', async () => {
     const manager = new WindowManager({} as never, 'C:\\app', 'adhd-one://app/index.html', {} as never, {} as never, { data: 'data', logs: 'logs' }, true);
     electronMocks.shell.openPath.mockRejectedValueOnce(new Error('EACCES C:\\Users\\Alice\\private\\token.txt token=notify-secret'));

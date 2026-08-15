@@ -41,13 +41,11 @@ export class WindowManager {
     });
 
     this.runtime.on('changed', snapshot => this.onRuntime(snapshot as RuntimeSnapshotV2));
-    this.runtime.on('ready', () => this.notify('DeepSeek Harness 已就绪', '本地 Harness 已安全启动。'));
+    this.runtime.on('ready', () => { this.notify('DeepSeek Harness 已就绪', '本地 Harness 已安全启动。'); void this.updates.refreshRuntimeStatus(); });
     this.runtime.on('crashed', () => this.notify('DeepSeek Harness 异常退出', 'ADHD One 正在按安全策略尝试恢复。'));
-    this.runtime.on('rolled-back', () => this.notify('DSH Runtime 已回滚', '候选 Runtime 启动失败，已恢复上一可用版本。'));
-    this.updates.on('changed', value => {
-      const update = value as UpdateSnapshotV2;
-      if (update.phase === 'available') this.notify(update.target === 'app' ? 'ADHD One 有新版本' : 'DSH Runtime 有新版本', update.candidateVersion ?? '可在更新页确认下载。');
-    });
+    this.runtime.on('rolled-back', () => { this.notify('DSH Runtime 已回滚', '候选 Runtime 启动失败，已恢复上一可用版本。'); void this.updates.refreshRuntimeStatus(); });
+    this.runtime.on('stable', () => void this.updates.refreshRuntimeStatus());
+    this.updates.on('changed', value => this.onUpdate(value as UpdateSnapshotV2));
     this.createTray(); this.onRuntime(this.runtime.snapshot());
   }
 
@@ -71,6 +69,10 @@ export class WindowManager {
       this.showHarness(snapshot);
     } else if (snapshot.state === 'failed') { this.harness?.hide(); this.showControl(); }
     this.rebuildTray(snapshot);
+  }
+  private onUpdate(update: UpdateSnapshotV2): void {
+    this.control?.webContents.send('update:changed', update);
+    if (update.phase === 'available') this.notify(update.target === 'app' ? 'ADHD One 有新版本' : 'DSH Runtime 有新版本', update.candidateVersion ?? '可在更新页确认下载。');
   }
   private ensureHarnessWindow(): BrowserWindow {
     if (this.harness && !this.harness.isDestroyed()) return this.harness;
@@ -133,7 +135,8 @@ export class WindowManager {
   private async checkUpdate(target: 'app' | 'runtime'): Promise<void> {
     this.showControl(); this.control?.webContents.send('control:navigate', 'updates');
     const settings = this.settings.get();
-    await this.updates.check(target, target === 'app' ? settings.appChannel : settings.runtimeChannel);
+    try { await this.updates.check(target, target === 'app' ? settings.appChannel : settings.runtimeChannel); }
+    catch { this.notify('检查更新失败', target === 'app' ? '无法检查 ADHD One 更新。' : '无法检查 DSH Runtime 更新。'); }
   }
   private guard(window: BrowserWindow, trustedOrigin: () => string | undefined): void {
     window.webContents.setWindowOpenHandler(({ url }) => { if (allowedExternalUrl(url)) void shell.openExternal(url); return { action: 'deny' }; });

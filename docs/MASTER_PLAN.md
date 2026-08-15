@@ -25,9 +25,9 @@
 
 当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 和 `v0.2.0-beta.2` 均为 prerelease；`v0.2.0-beta.2` 已于 2026-08-15 发布，11 个 Release API 上传资产可公开下载（GitHub 另提供自动生成的源码归档）；`v0.2.0` Stable 尚未发布。
 
-当前验证进度：**79%**（Q3 打包后自动 E2E +5）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。已计入 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、Runtime smoke、Fuse，以及 Windows Server 2025 上的 build、安装版 13-cycle、真实 PowerShell tool-call、十次启动、卸载残留和 Portable ZIP E2E。Stable 发布、干净 Windows 11 与性能结果尚未计入。
+当前验证进度：**84%**（U1 +2、U2 +2、U3 +1）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。真实 GitHub 应用更新 feed、打包后 Runtime 回滚 E2E、Stable 发布、干净 Windows 11 与性能结果尚未计入。
 
-最新证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；此前 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
+最新本地证据：`npm run check` 通过 27 个 test files（300 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 23 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
 
 2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
 
@@ -49,9 +49,9 @@
 | D2 | Quick Provider Doctor | 4 | 4 |
 | D3 | Deep Provider Doctor | 7 | 5 |
 | D4 | 首次启动、迁移、错误 UX | 4 | 3 |
-| U1 | 应用更新 | 5 | 1 |
-| U2 | Runtime 下载与验证 | 6 | 4 |
-| U3 | Runtime A/B 与回滚 | 6 | 4 |
+| U1 | 应用更新 | 5 | 3 |
+| U2 | Runtime 下载与验证 | 6 | 6 |
+| U3 | Runtime A/B 与回滚 | 6 | 5 |
 | U4 | 供应链与 Release 证明 | 3 | 2 |
 | S1 | 原子设置与恢复 | 4 | 4 |
 | S2 | AppData、Portable、旧数据迁移 | 4 | 4 |
@@ -62,7 +62,7 @@
 | Q4 | Windows 11、性能、兼容性 | 5 | 0 |
 | P1 | 品牌、仓库、Beta 发布基础 | 3 | 3 |
 | P2 | 准确文档、兼容矩阵、推广 | 2 | 1 |
-| **总计** |  | **100** | **79** |
+| **总计** |  | **100** | **84** |
 
 ## 3. Reuse Gate：不重复造轮子
 
@@ -331,8 +331,11 @@ npm run smoke:runtime-staging
 ```powershell
 npm run test:update
 npm run smoke:runtime-archive
+npm run smoke:runtime-update
 npm run audit:signatures
 ```
+
+`smoke:runtime-update` 直接消费发布用 `vendor/dsh-runtime.7z`，经过真实列表、解压树、PE/依赖闭包、Runtime staging Session/tool-call smoke 和 A/B journal 提交；Windows 与 Release workflow 都在共享构建完成后执行该门禁。
 
 后续阶段待新增（当前不可执行）：
 

@@ -80,6 +80,66 @@ function runtime(value) {
   $('#dot').className = `dot ${value.state}`;
 }
 
+const updateSnapshots = new Map();
+let portableMode = false;
+const UPDATE_PHASES = Object.freeze({
+  idle: '已是最新版本', checking: '正在检查', available: '发现可用更新',
+  downloading: '正在下载', installing: '正在验证并安装', verified: '验证完成', failed: '更新失败'
+});
+
+function bytes(value) {
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function renderUpdate(value) {
+  if (!value || (value.target !== 'app' && value.target !== 'runtime')) return;
+  updateSnapshots.set(value.target, value);
+  const current = value.currentVersion || '未知';
+  const candidate = value.candidateVersion ? ` → ${value.candidateVersion}` : '';
+  const transferred = Number.isFinite(value.receivedBytes) && Number.isFinite(value.totalBytes)
+    ? ` · ${bytes(value.receivedBytes)} / ${bytes(value.totalBytes)}` : '';
+  const rollback = value.rollback ? ' · 可回滚' : '';
+  document.querySelector(`[data-update-summary="${value.target}"]`).textContent =
+    `${UPDATE_PHASES[value.phase] || value.phase} · ${current}${candidate}${transferred}${rollback}`;
+  const progress = value.totalBytes > 0 ? Math.min(100, value.receivedBytes / value.totalBytes * 100) : 0;
+  document.querySelector(`[data-update-progress="${value.target}"]`).style.width = `${progress}%`;
+  const check = document.querySelector(`[data-update="${value.target}"]`);
+  const install = document.querySelector(`[data-install="${value.target}"]`);
+  const busy = value.phase === 'checking' || value.phase === 'downloading' || value.phase === 'installing';
+  check.disabled = busy;
+  install.disabled = busy || (!value.canConfirm && !value.canInstall);
+  if (value.target === 'app') install.textContent = portableMode ? '打开手动下载页' : value.canInstall ? '重启并安装' : '下载并验证';
+  $('#update').textContent = value.error ? fixedErrorMessage(value.error)
+    : value.phase === 'verified' && value.target === 'app' ? '安装包和 GitHub 构建证明验证通过。再次确认后将停止 Harness 并重启安装。'
+      : value.phase === 'verified' ? 'Runtime 已通过校验和 smoke，正在使用候选槽位；启动失败会自动回滚。'
+        : '检查不会自动下载；下载和安装均需要确认。';
+}
+
+async function runUpdateAction(button, operation) {
+  const target = button.dataset.update || button.dataset.install;
+  let failed = false;
+  document.querySelectorAll(`[data-update="${target}"],[data-install="${target}"]`).forEach(value => { value.disabled = true; });
+  try {
+    const result = await operation(target);
+    if (result) renderUpdate(result);
+  } catch (error) {
+    failed = true;
+    $('#update').textContent = `操作失败：${fixedErrorMessage(error)}`;
+  } finally {
+    const latest = updateSnapshots.get(target);
+    if (latest && !failed) renderUpdate(latest);
+    else if (latest) {
+      const busy = latest.phase === 'checking' || latest.phase === 'downloading' || latest.phase === 'installing';
+      document.querySelector(`[data-update="${target}"]`).disabled = busy;
+      document.querySelector(`[data-install="${target}"]`).disabled = busy || (!latest.canConfirm && !latest.canInstall);
+    }
+    else document.querySelector(`[data-update="${target}"]`).disabled = false;
+  }
+}
+
 async function action(button, work, target) {
   button.disabled = true;
   try {
@@ -123,25 +183,25 @@ $('#cancel-doctor').onclick = function () { return action(this, () => api.cancel
 $('#copy').onclick = function () { return action(this, () => api.copyDoctorReport(), $('#report')); };
 document.querySelectorAll('[data-update]').forEach(button => {
   button.onclick = function () {
-    return action(this, async () => {
-      $('#update').textContent = safeJson(await api.checkUpdates(this.dataset.update));
-    }, $('#update'));
+    return runUpdateAction(this, target => api.checkUpdates(target));
   };
 });
 document.querySelectorAll('[data-install]').forEach(button => {
   button.onclick = function () {
-    return action(this, async () => {
-      await api.confirmUpdate(this.dataset.install);
-      $('#update').textContent = '更新已验证；请按提示完成切换。';
-    }, $('#update'));
+    return runUpdateAction(this, target => api.confirmUpdate(target));
   };
 });
 api.onRuntimeChanged(runtime);
-api.onUpdateChanged(value => { $('#update').textContent = safeJson(value); });
+api.onUpdateChanged(renderUpdate);
 api.onDoctorProgress(value => { $('#report').textContent = `${value.message}\n${$('#report').textContent}`; });
 api.onNavigate(show);
 api.getAppSnapshot().then(value => {
+  portableMode = value.portable === true;
   runtime(value.runtime);
+  if (value.updates) {
+    renderUpdate(value.updates.app);
+    renderUpdate(value.updates.runtime);
+  }
   $('#workspace').textContent = value.workspace || '尚未选择工作区';
 }).catch(error => {
   $('#state').textContent = `操作失败：${fixedErrorMessage(error)}`;

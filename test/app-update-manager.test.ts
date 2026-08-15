@@ -150,6 +150,23 @@ describe('app updater P0 gates', () => {
     });
   });
 
+  it('clears a stale verified state after a candidate becomes stable', async () => {
+    const root = await makeTemporaryDirectory();
+    await mkdir(path.join(root, 'runtimes'), { recursive: true });
+    await writeFile(path.join(root, 'runtimes', 'runtime-state.json'), JSON.stringify({
+      schemaVersion: 1, active: 'A', previous: 'bundled', version: '0.2.0', healthy: true, candidate: false
+    }));
+    const manager = makeManager(root);
+    (manager as unknown as { set(target: string, patch: Record<string, unknown>): void }).set('runtime', {
+      phase: 'verified', candidateVersion: '0.2.0', rollback: true
+    });
+
+    await expect(manager.refreshRuntimeStatus()).resolves.toMatchObject({
+      phase: 'idle', currentVersion: '0.2.0', rollback: false, canConfirm: false, canInstall: false
+    });
+    expect(manager.snapshot('runtime')).not.toHaveProperty('candidateVersion');
+  });
+
   it('constructs with automatic download and install-on-quit disabled', async () => {
     const root = await makeTemporaryDirectory();
 
@@ -157,6 +174,19 @@ describe('app updater P0 gates', () => {
 
     expect(updaterMock.autoDownload).toBe(false);
     expect(updaterMock.autoInstallOnAppQuit).toBe(false);
+  });
+
+  it.each([
+    ['stable', false],
+    ['preview', true]
+  ] as const)('maps the %s channel to electron-updater prerelease policy', async (channel, prerelease) => {
+    const root = await makeTemporaryDirectory();
+    const manager = makeManager(root);
+    updaterMock.checkForUpdates.mockResolvedValue(null);
+
+    await manager.check('app', channel);
+
+    expect(updaterMock.allowPrerelease).toBe(prerelease);
   });
 
   it('never downloads an app update from a portable build', async () => {

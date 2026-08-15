@@ -98,12 +98,18 @@ describe('runtime manifest', () => {
   it('rejects prereleases on stable without substring guesses', () => {
     expect(() => parseRuntimeManifest({ ...manifest, runtime: { ...manifest.runtime, version: '0.2.0-rc.1' } }, 'stable')).toThrow('PRERELEASE_ON_STABLE');
   });
+  it('rejects invalid or incompatible DSH RPC protocol ranges', () => {
+    expect(() => parseRuntimeManifest({ ...manifest, runtime: { ...manifest.runtime, protocolCompatibility: 'not-a-range' } }, 'stable')).toThrow('DSH_PROTOCOL_INCOMPATIBLE');
+    expect(() => parseRuntimeManifest({ ...manifest, runtime: { ...manifest.runtime, protocolCompatibility: '^2' } }, 'stable')).toThrow('DSH_PROTOCOL_INCOMPATIBLE');
+    expect(parseRuntimeManifest({ ...manifest, runtime: { ...manifest.runtime, protocolCompatibility: '^1' } }, 'stable').runtime.protocolCompatibility).toBe('^1');
+  });
   it('permits only upgrades and preserves the last healthy rollback slot', () => {
     expect(isRuntimeUpgrade('0.2.0', '0.1.0')).toBe(true);
     expect(isRuntimeUpgrade('0.1.0', '0.1.0')).toBe(false);
     expect(isRuntimeUpgrade('0.0.9', '0.1.0')).toBe(false);
     expect(selectRuntimeInstallSlots({ active: 'A', healthy: true })).toEqual({ slot: 'B', previous: 'A' });
     expect(selectRuntimeInstallSlots({ active: 'A', previous: 'B', healthy: false })).toEqual({ slot: 'A', previous: 'B' });
+    expect(selectRuntimeInstallSlots({ active: 'A', previous: 'B', healthy: true, candidate: true })).toEqual({ slot: 'A', previous: 'B' });
     expect(selectRuntimeInstallSlots({ active: 'bundled', previous: 'B', healthy: true })).toEqual({ slot: 'A', previous: 'bundled' });
   });
 });
@@ -251,7 +257,8 @@ describe('runtime journal wiring', () => {
     await (manager as unknown as UpdateManagerInternals).installVerifiedRuntime(archive, verifiedManifest);
 
     expect(JSON.parse(await readFile(stateFile, 'utf8'))).toEqual({
-      schemaVersion: 1, active: 'B', previous: 'A', version: manifest.runtime.version, healthy: false
+      schemaVersion: 1, active: 'B', previous: 'A', version: manifest.runtime.version, healthy: false,
+      candidate: true, installedAt: expect.any(String)
     });
     expect(await fileExists(journalFile)).toBe(false);
     expect((await readdir(runtimes)).sort()).toEqual(['runtime-state.json', 'slot-A', 'slot-B']);

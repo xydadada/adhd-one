@@ -103,7 +103,9 @@ export interface DoctorProgress {
 
 export interface AppSnapshot {
   appVersion: string;
+  portable: boolean;
   runtime: RuntimeSnapshot;
+  updates: { app: UpdateSnapshotV2; runtime: UpdateSnapshotV2 };
   workspace?: string | undefined;
 }
 

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -99,5 +99,27 @@ describe('RuntimeController closure startup gate', () => {
     expect(internal.rollbackCandidate).toHaveBeenCalledWith('A', true);
     expect(internal.selectRuntime).toHaveBeenCalledTimes(2);
     expect(snapshot).toMatchObject({ state: 'failed', slot: 'bundled', error: { code: 'RUNTIME_CLOSURE_ROOT_INVALID' } });
+  });
+
+  it('persists rollback when the active candidate slot is missing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-runtime-missing-slot-'));
+    roots.push(root);
+    const runtimes = path.join(root, 'runtimes');
+    await mkdir(runtimes, { recursive: true });
+    await writeFile(path.join(runtimes, 'runtime-state.json'), JSON.stringify({
+      schemaVersion: 1, active: 'A', previous: 'bundled', version: '9.9.9', healthy: false, candidate: true
+    }));
+    const controller = new RuntimeController({
+      get: () => ({ workspace: root, preferredPort: 43123 }), update: async () => undefined
+    } as never, {
+      appPath: root, resourcesPath: root, packaged: false,
+      dshHome: path.join(root, 'dsh-home'), logs: path.join(root, 'logs'), runtimes
+    });
+
+    const selection = await (controller as unknown as { selectRuntime(): Promise<{ slot: string }> }).selectRuntime();
+    const state = JSON.parse(await readFile(path.join(runtimes, 'runtime-state.json'), 'utf8')) as Record<string, unknown>;
+
+    expect(selection.slot).toBe('bundled');
+    expect(state).toMatchObject({ active: 'bundled', previous: 'A', healthy: true, candidate: false, rolledBackFrom: 'A' });
   });
 });

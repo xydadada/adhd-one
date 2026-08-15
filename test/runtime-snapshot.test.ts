@@ -11,6 +11,7 @@ type ControllerInternals = {
   setSnapshot(patch: Partial<Omit<RuntimeSnapshotV2, 'health'>>): void;
   handleUnexpectedExit(child: ManagedProcess, generation: number, code: number): void;
   armStableTimer(generation: number): void;
+  markRuntimeStable: ReturnType<typeof vi.fn>;
   rollbackCandidate: ReturnType<typeof vi.fn>;
   startAttempt: ReturnType<typeof vi.fn>;
 };
@@ -137,6 +138,23 @@ describe('RuntimeSnapshotV2', () => {
 
     expect(privateController.startAttempt).toHaveBeenCalledWith(false, expect.any(Number));
     expect(controller.snapshot().restartAttempt).toBe(3);
+  });
+
+  it('persists the end of candidate probation after ten stable minutes', async () => {
+    vi.useFakeTimers({ now: 100 });
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    privateController.candidateSlot = 'B';
+    privateController.candidateGeneration = 9;
+    privateController.markRuntimeStable = vi.fn(async () => undefined);
+    privateController.setSnapshot({ state: 'ready', generation: 9, slot: 'B', runtimeVersion: '0.2.0' });
+
+    privateController.armStableTimer(9);
+    await vi.advanceTimersByTimeAsync(600_000);
+
+    expect(privateController.markRuntimeStable).toHaveBeenCalledWith('B', '0.2.0');
+    expect(privateController.candidateSlot).toBeUndefined();
+    expect(privateController.candidateGeneration).toBeUndefined();
   });
 
   it('does not increment restartAttempt for manual start, stop, or restart', async () => {

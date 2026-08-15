@@ -76,6 +76,7 @@ describe('QuitCoordinator', () => {
   });
 
   it('treats a rejected runtime stop as a failure and preserves an explicit exit code', async () => {
+    vi.useFakeTimers();
     const fixture = createFixture({ runtime: {
       stop: vi.fn(async () => { throw new Error('stop failed'); }),
       forceShutdown: vi.fn(() => { fixture.calls.push('forceShutdown'); })
@@ -85,6 +86,8 @@ describe('QuitCoordinator', () => {
 
     expect(fixture.runtime.forceShutdown).toHaveBeenCalledOnce();
     expect(fixture.appExit).toHaveBeenCalledWith(23);
+    await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS);
+    expect(fixture.hardExit).toHaveBeenCalledWith(23);
   });
 
   it('returns the same request, cancels the hard-exit fallback, and never exits twice', async () => {

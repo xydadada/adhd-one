@@ -14,6 +14,8 @@ const CONTROL_WINDOW_TIMEOUT_MS = 60_000;
 const CDP_TIMEOUT_MS = 30_000;
 const GRACEFUL_EXIT_TIMEOUT_MS = 8_000;
 const FORCE_EXIT_TIMEOUT_MS = 5_000;
+const PROCESS_TREE_DISCOVERY_TIMEOUT_MS = 20_000;
+const WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
 const PROCESS_PATH_AUDIT_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 const TEMP_ROOT_PREFIX = 'adhd-one-packaged-e2e-';
@@ -706,7 +708,7 @@ export function shouldCopyPortableEntry(sourceRoot, source) {
 
 async function windowsProcesses() {
   const script = "$selfPid = $PID; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | Where-Object { $_.ProcessId -ne $selfPid -and $_.ParentProcessId -ne $selfPid } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | ConvertTo-Json -Compress";
-  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
   const value = JSON.parse(stdout);
   return (Array.isArray(value) ? value : [value]).map(item => ({
     pid: Number(item.ProcessId),
@@ -731,13 +733,22 @@ function processTree(processes, rootPid) {
   return [...selected.values()];
 }
 
-export async function waitForProcessTree(readProcesses, rootPid, runtimePid, timeoutMs = FORCE_EXIT_TIMEOUT_MS, pollIntervalMs = 200) {
+export async function waitForProcessTree(readProcesses, rootPid, runtimePid, timeoutMs = PROCESS_TREE_DISCOVERY_TIMEOUT_MS, pollIntervalMs = 200) {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   let lastTree = [];
+  let lastError;
   do {
-    lastTree = processTree(await readProcesses(), rootPid);
-    if (lastTree.some(item => item.pid === rootPid) && lastTree.some(item => item.pid === runtimePid)) return lastTree;
-    if (Date.now() >= deadline) return lastTree;
+    try {
+      lastTree = processTree(await readProcesses(), rootPid);
+      lastError = undefined;
+      if (lastTree.some(item => item.pid === rootPid) && lastTree.some(item => item.pid === runtimePid)) return lastTree;
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) {
+      if (lastError) throw lastError;
+      return lastTree;
+    }
     await delay(Math.min(Math.max(0, pollIntervalMs), Math.max(0, deadline - Date.now())));
   } while (true);
 }

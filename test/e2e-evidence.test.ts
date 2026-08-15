@@ -133,6 +133,23 @@ describe('packaged E2E evidence safety', () => {
     expect(tree.map(item => item.pid)).toEqual([100, 200]);
   });
 
+  it('does not attach an orphan whose stale parent PID was reused by Electron', async () => {
+    const root = { pid: 100, parentPid: 1, created: '20260815120000.000000+000' };
+    const runtime = { pid: 200, parentPid: 100, created: '20260815120001.000000+000' };
+    const staleOrphan = { pid: 300, parentPid: 100, created: '20260814120000.000000+000' };
+    const staleDescendant = { pid: 400, parentPid: 300, created: '20260814120001.000000+000' };
+
+    const tree = await waitForProcessTree(
+      async () => [root, runtime, staleOrphan, staleDescendant],
+      root.pid,
+      runtime.pid,
+      0,
+      0
+    );
+
+    expect(tree.map(item => item.pid)).toEqual([100, 200]);
+  });
+
   it('requires both the Electron root and runtime before treating a process tree as observed', () => {
     const root = { pid: 100, parentPid: 1 };
     const runtime = { pid: 200, parentPid: 100 };

@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 
 const CONTROL_WINDOW_TIMEOUT_MS = 60_000;
 const CDP_TIMEOUT_MS = 30_000;
-const GRACEFUL_EXIT_TIMEOUT_MS = 8_000;
+const GRACEFUL_EXIT_TIMEOUT_MS = 5_000;
 const FORCE_EXIT_TIMEOUT_MS = 5_000;
 const PROCESS_TREE_DISCOVERY_TIMEOUT_MS = 20_000;
 const WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
@@ -21,8 +21,12 @@ const POLL_INTERVAL_MS = 100;
 const TEMP_ROOT_PREFIX = 'adhd-one-packaged-e2e-';
 const RUNTIME_ROLLBACK_STATE_VERSION = '999.0.0-e2e-broken';
 const RUNTIME_ROLLBACK_PACKAGE_VERSION = '998.0.0-e2e-mismatch';
+const QUALIFICATION_EVIDENCE_SCHEMA_VERSION = 1;
+const QUALIFICATION_EVIDENCE_TOOL = 'adhd-one-packaged-qualification';
+const QUALIFICATION_LIMITS = Object.freeze({ firstInteractiveMs: 15_000, hotReadyMs: 8_000, exitMs: 5_000 });
 
 const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write', 'runtime-rollback']);
+export const CLI_SCENARIOS = new Set([...E2E_SCENARIOS, 'qualification']);
 const EVIDENCE_CLEANUP_STATES = new Set(['pending', 'removed', 'failed', 'not-created']);
 const WORKSPACE_RPC_CLIENT_SOURCES = new Set(['not-run', 'packaged-asar', 'local-out', 'unavailable']);
 const WORKSPACE_PERMISSION_MODES = new Set(['not-run', 'workspace-write', 'danger-full-access', 'other', 'unknown']);
@@ -257,6 +261,83 @@ export function sanitizeEvidence(evidence) {
   };
 }
 
+function sanitizeQualificationCycle(record) {
+  const cycle = record ?? {};
+  const forcedTermination = cycle.forcedTermination === true;
+  const spawnToControlWindowMs = nonNegativeInteger(cycle.spawnToControlWindowMs);
+  const restartToReadyMs = nonNegativeInteger(cycle.restartToReadyMs);
+  const quitToExitMs = nonNegativeInteger(cycle.quitToExitMs);
+  const withinLimits = spawnToControlWindowMs !== undefined && spawnToControlWindowMs <= QUALIFICATION_LIMITS.firstInteractiveMs
+    && restartToReadyMs !== undefined && restartToReadyMs <= QUALIFICATION_LIMITS.hotReadyMs
+    && quitToExitMs !== undefined && quitToExitMs <= QUALIFICATION_LIMITS.exitMs;
+  const errorCode = cycle.errorCode === undefined
+    ? undefined
+    : stableStageErrorCode(cycle.errorCode, 'QUALIFICATION_FAILED', 'QUALIFICATION_TIMEOUT');
+  return {
+    cycle: nonNegativeInteger(cycle.cycle, 1),
+    scenario: 'qualification',
+    passed: cycle.passed === true && !forcedTermination && withinLimits,
+    spawnVerified: cycle.spawnVerified === true,
+    spawnToControlWindowMs,
+    controlWindowVerified: cycle.controlWindowVerified === true,
+    controlWindowOperational: cycle.controlWindowOperational === true,
+    coldRuntimeReadyVerified: cycle.coldRuntimeReadyVerified === true,
+    coldGeneration: nonNegativeInteger(cycle.coldGeneration),
+    restartRequested: cycle.restartRequested === true,
+    restartRuntimeAccepted: cycle.restartRuntimeAccepted === true,
+    restartReadyVerified: cycle.restartReadyVerified === true,
+    restartToReadyMs,
+    hotGeneration: nonNegativeInteger(cycle.hotGeneration),
+    electronRootStable: cycle.electronRootStable === true,
+    coldProcessTreeObserved: cycle.coldProcessTreeObserved === true,
+    hotProcessTreeObserved: cycle.hotProcessTreeObserved === true,
+    coldProcessTreeCount: nonNegativeInteger(cycle.coldProcessTreeCount, 0),
+    hotProcessTreeCount: nonNegativeInteger(cycle.hotProcessTreeCount, 0),
+    mergedProcessTreeCount: nonNegativeInteger(cycle.mergedProcessTreeCount, 0),
+    processTreeExited: cycle.processTreeExited === true,
+    quitAccepted: cycle.quitAccepted === true,
+    quitToExitMs,
+    gracefulExitVerified: cycle.gracefulExitVerified === true,
+    forcedTermination,
+    exitCode: safeExitCode(cycle.exitCode),
+    exitSignal: safeSignal(cycle.exitSignal),
+    exitVerified: cycle.exitVerified === true,
+    cdpClosed: cycle.cdpClosed === true,
+    cleanup: EVIDENCE_CLEANUP_STATES.has(cycle.cleanup) ? cycle.cleanup : 'unknown',
+    cleanupRootExisted: cycle.cleanupRootExisted === true,
+    cleanupRootAbsent: cycle.cleanupRootAbsent === true,
+    cleanupVerified: cycle.cleanupVerified === true,
+    finalScopedProcessAuditPassed: cycle.finalScopedProcessAuditPassed === true,
+    finalScopedProcessAuditCount: nonNegativeInteger(cycle.finalScopedProcessAuditCount, 0),
+    errorCode
+  };
+}
+
+export function sanitizeQualificationEvidence(evidence) {
+  const rawCycles = Array.isArray(evidence?.cycles) ? evidence.cycles : [];
+  const cycles = rawCycles.length > 0 ? [sanitizeQualificationCycle(rawCycles[0])] : [];
+  const forcedTermination = cycles[0]?.forcedTermination === true;
+  return {
+    schemaVersion: QUALIFICATION_EVIDENCE_SCHEMA_VERSION,
+    tool: QUALIFICATION_EVIDENCE_TOOL,
+    generatedAt: safeTimestamp(evidence?.generatedAt),
+    scenario: 'qualification',
+    cyclesRequested: 1,
+    cyclesCompleted: cycles.length === 1 ? 1 : 0,
+    spawnVerified: evidence?.spawnVerified === true,
+    coldStartVerified: evidence?.coldStartVerified === true,
+    restartRuntimeVerified: evidence?.restartRuntimeVerified === true,
+    electronRootStable: evidence?.electronRootStable === true,
+    quitAccepted: evidence?.quitAccepted === true,
+    gracefulExitVerified: evidence?.gracefulExitVerified === true,
+    exitVerified: evidence?.exitVerified === true,
+    cleanupVerified: evidence?.cleanupVerified === true,
+    finalScopedProcessAuditPassed: evidence?.finalScopedProcessAuditPassed === true,
+    passed: evidence?.passed === true && !forcedTermination && cycles[0]?.passed === true,
+    cycles
+  };
+}
+
 function countStreamBytes(stats, chunk) {
   stats.bytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(String(chunk));
 }
@@ -264,17 +345,19 @@ function countStreamBytes(stats, chunk) {
 function usage() {
   return [
     'Usage:',
-    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write|runtime-rollback>] [--require-portable]',
+    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write|runtime-rollback|qualification>] [--require-portable]',
     '',
     'The executable must be the installed or extracted ADHD One application executable, not the NSIS installer.'
   ].join('\n');
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
+  if (!Array.isArray(argv)) throw new Error('INVALID_ARGUMENT');
   const values = { exe: undefined, output: undefined, cycles: 1, scenario: 'launch', requirePortable: false };
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
+    if (typeof token !== 'string') throw new Error('INVALID_ARGUMENT');
     if (token === '--help' || token === '-h') {
       console.log(usage());
       process.exitCode = 0;
@@ -305,11 +388,12 @@ function parseArgs(argv) {
       if (!Number.isSafeInteger(cycles) || cycles < 1 || cycles > 100) throw new Error('--cycles must be an integer from 1 to 100');
       values.cycles = cycles;
     } else {
-      if (!E2E_SCENARIOS.has(value)) throw new Error('--scenario must be launch, force-kill, workspace-write, or runtime-rollback');
+      if (!CLI_SCENARIOS.has(value)) throw new Error('--scenario must be launch, force-kill, workspace-write, runtime-rollback, or qualification');
       values.scenario = value;
     }
   }
   if (!values.exe || !values.output) throw new Error(`--exe and --output are required\n\n${usage()}`);
+  if (values.scenario === 'qualification') values.cycles = 1;
   return values;
 }
 
@@ -402,6 +486,15 @@ async function exitedWithin(exitPromise, milliseconds) {
   }
 }
 
+async function exitInfoWithin(exitPromise, milliseconds) {
+  try {
+    return await withTimeout(exitPromise, milliseconds, 'PROCESS_EXIT');
+  } catch (error) {
+    if (error instanceof Error && error.message === 'PROCESS_EXIT_TIMEOUT') return undefined;
+    return undefined;
+  }
+}
+
 function isLoopbackHostname(value) {
   const hostname = String(value ?? '').replace(/^\[|\]$/gu, '').toLowerCase();
   if (hostname === 'localhost') return true;
@@ -486,7 +579,8 @@ async function waitForControlWindow(browser, child, exitPromise) {
   throw new Error('CONTROL_WINDOW_TIMEOUT');
 }
 
-async function waitForRuntimeReady(control, child, exitPromise) {
+export async function waitForRuntimeReady(control, child, exitPromise, minimumGeneration = 0) {
+  if (!Number.isSafeInteger(minimumGeneration) || minimumGeneration < 0) throw new Error('INVALID_MINIMUM_GENERATION');
   const deadline = Date.now() + CONTROL_WINDOW_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) throw new Error('APPLICATION_EXITED_WHILE_WAITING_FOR_READY');
@@ -498,8 +592,21 @@ async function waitForRuntimeReady(control, child, exitPromise) {
         'RUNTIME_SNAPSHOT_EVALUATE_FAILED',
         'RUNTIME_SNAPSHOT_EVALUATE_TIMEOUT'
       );
-      if (snapshot?.runtime?.state !== 'ready' || !snapshot.runtime.pid || !snapshot.runtime.url) throw new Error('RUNTIME_SNAPSHOT_NOT_READY');
-      return { snapshot };
+      const runtime = snapshot?.runtime;
+      if (runtime?.state === 'ready' && safePid(runtime.pid) && runtime.url
+        && Number.isSafeInteger(runtime.generation) && runtime.generation >= minimumGeneration) {
+        return { snapshot };
+      }
+      if (minimumGeneration > 0 && Number.isSafeInteger(runtime?.generation)
+        && runtime.generation < minimumGeneration) {
+        await delay(POLL_INTERVAL_MS);
+        continue;
+      }
+      if (minimumGeneration > 0 && ['preparing', 'starting', 'stopping', 'updating'].includes(runtime?.state)) {
+        await delay(POLL_INTERVAL_MS);
+        continue;
+      }
+      throw new Error('RUNTIME_SNAPSHOT_NOT_READY');
     }
     if (/^Harness[：:]\s*failed\b/iu.test(statusText)) throw new Error('RUNTIME_FAILED');
     const exited = await Promise.race([exitPromise, Promise.resolve(undefined)]);
@@ -507,6 +614,21 @@ async function waitForRuntimeReady(control, child, exitPromise) {
     await delay(POLL_INTERVAL_MS);
   }
   throw new Error('RUNTIME_READY_TIMEOUT');
+}
+
+async function verifyControlWindowOperational(control) {
+  const state = await withStableStage(
+    () => control.evaluate(() => ({
+      stateElement: Boolean(document.querySelector('#state')),
+      snapshot: typeof window.adhdOne?.getAppSnapshot === 'function',
+      restartRuntime: typeof window.adhdOne?.restartRuntime === 'function',
+      quitApp: typeof window.adhdOne?.quitApp === 'function'
+    })),
+    'CONTROL_WINDOW_OPERATIONAL_CHECK_FAILED',
+    'CONTROL_WINDOW_OPERATIONAL_CHECK_TIMEOUT'
+  );
+  return state?.stateElement === true && state.snapshot === true
+    && state.restartRuntime === true && state.quitApp === true;
 }
 
 function isRecord(value) {
@@ -745,16 +867,45 @@ async function windowsProcesses() {
 }
 
 function processTree(processes, rootPid) {
+  const root = processes.find(item => item.pid === rootPid);
+  if (!root) return [];
   const selected = new Map();
-  const pending = [rootPid];
+  const pending = [root];
   while (pending.length) {
     const parent = pending.shift();
-    for (const item of processes) if (item.pid === parent || item.parentPid === parent) {
+    if (!parent || selected.has(parent.pid)) continue;
+    selected.set(parent.pid, parent);
+    const parentCreatedAt = processCreationTime(parent.created);
+    for (const item of processes) if (item.parentPid === parent.pid) {
       if (selected.has(item.pid)) continue;
-      selected.set(item.pid, item); pending.push(item.pid);
+      const childCreatedAt = processCreationTime(item.created);
+      // ParentProcessId is only a numeric PID. Windows can retain it on an
+      // orphan after that PID has been reused by a later Electron process.
+      // When both identities have timestamps, an older child cannot belong to
+      // the newer parent and must not pull an unrelated system tree into E2E.
+      if (parentCreatedAt !== undefined && childCreatedAt !== undefined && childCreatedAt < parentCreatedAt) continue;
+      pending.push(item);
     }
   }
   return [...selected.values()];
+}
+
+function mergeProcessTrees(...trees) {
+  const merged = new Map();
+  for (const tree of trees.flat()) {
+    if (!safePid(tree?.pid)) continue;
+    const key = `${tree.pid}:${String(tree.created ?? '')}`;
+    if (!merged.has(key)) merged.set(key, tree);
+  }
+  return [...merged.values()].sort((left, right) => left.pid - right.pid);
+}
+
+function electronRootIdentityStable(coldTree, hotTree, rootPid) {
+  const coldRoot = coldTree.find(item => item.pid === rootPid);
+  const hotRoot = hotTree.find(item => item.pid === rootPid);
+  return safePid(rootPid) !== undefined
+    && sameProcessIdentity(coldRoot, hotRoot)
+    && String(coldRoot?.created ?? '').length > 0;
 }
 
 export function hasObservedProcessTree(processes, rootPid, runtimePid) {
@@ -961,6 +1112,46 @@ async function terminateApplication(child, exitPromise, browser, control, scenar
   try { forceKilled = child.kill('SIGKILL'); } catch { forceKilled = false; }
   await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
   return { forcedTermination: forceKilled, forceKillVerified: false, quitAccepted, gracefulExitVerified: false };
+}
+
+async function terminateQualificationApplication(child, exitPromise, control) {
+  let quitAccepted = false;
+  let quitStartedAt;
+  let quitErrorCode;
+  if (control && !control.isClosed()) {
+    // Start the exit measurement immediately before the first and only
+    // SecureBridge quitApp call. A forced fallback is never a qualification pass.
+    quitStartedAt = performance.now();
+    try {
+      const response = await withTimeout(control.evaluate(() => window.adhdOne.quitApp()), 3_000, 'APP_QUIT');
+      quitAccepted = response?.accepted === true;
+    } catch (error) {
+      quitErrorCode = stableStageErrorCode(error, 'APP_QUIT_REQUEST_FAILED', 'APP_QUIT_TIMEOUT');
+    }
+  }
+  const gracefulExit = quitAccepted ? await exitInfoWithin(exitPromise, GRACEFUL_EXIT_TIMEOUT_MS) : undefined;
+  if (gracefulExit) {
+    return {
+      quitAccepted,
+      gracefulExitVerified: true,
+      forcedTermination: false,
+      quitStartedAt,
+      exitAt: performance.now(),
+      errorCode: quitErrorCode
+    };
+  }
+
+  let forcedTermination = false;
+  try { forcedTermination = child.kill('SIGKILL'); } catch { forcedTermination = false; }
+  const forcedExit = await exitInfoWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
+  return {
+    quitAccepted,
+    gracefulExitVerified: false,
+    forcedTermination,
+    quitStartedAt,
+    exitAt: forcedExit ? performance.now() : undefined,
+    errorCode: quitErrorCode
+  };
 }
 
 async function prepareRun() {
@@ -1295,6 +1486,259 @@ function cycleFailureCode(record) {
   return 'E2E_CYCLE_FAILED';
 }
 
+function qualificationFailureCode(record) {
+  if (record.forcedTermination) return 'APPLICATION_DID_NOT_EXIT_GRACEFULLY';
+  if (!record.spawnVerified) return 'APPLICATION_SPAWN_FAILED';
+  if (!record.controlWindowVerified || !record.controlWindowOperational) return 'CONTROL_WINDOW_NOT_OPERATIONAL';
+  if (!record.coldRuntimeReadyVerified) return 'RUNTIME_COLD_START_FAILED';
+  if (!record.restartRequested || !record.restartRuntimeAccepted) return 'RUNTIME_RESTART_FAILED';
+  if (!record.restartReadyVerified) return 'RUNTIME_RESTART_READY_FAILED';
+  if (!record.electronRootStable) return 'ELECTRON_ROOT_IDENTITY_UNSTABLE';
+  if (!record.quitAccepted) return 'APP_QUIT_NOT_ACCEPTED';
+  if (!record.gracefulExitVerified) return 'APPLICATION_GRACEFUL_EXIT_FAILED';
+  if (!record.exitVerified) return 'APPLICATION_EXIT_VERIFICATION_FAILED';
+  if (!record.finalScopedProcessAuditPassed) return 'PROCESS_PATH_AUDIT_FAILED';
+  if (!record.cleanupVerified) return 'CLEANUP_FAILED';
+  return 'QUALIFICATION_FAILED';
+}
+
+async function runQualificationCycle(executable, chromium, requirePortable = false) {
+  const startedAt = Date.now();
+  const record = {
+    cycle: 1,
+    scenario: 'qualification',
+    passed: false,
+    spawnVerified: false,
+    spawnToControlWindowMs: undefined,
+    controlWindowVerified: false,
+    controlWindowOperational: false,
+    coldRuntimeReadyVerified: false,
+    coldGeneration: undefined,
+    restartRequested: false,
+    restartRuntimeAccepted: false,
+    restartReadyVerified: false,
+    restartToReadyMs: undefined,
+    hotGeneration: undefined,
+    electronRootStable: false,
+    coldProcessTreeObserved: false,
+    hotProcessTreeObserved: false,
+    coldProcessTreeCount: 0,
+    hotProcessTreeCount: 0,
+    mergedProcessTreeCount: 0,
+    processTreeExited: false,
+    quitAccepted: false,
+    quitToExitMs: undefined,
+    gracefulExitVerified: false,
+    forcedTermination: false,
+    exitCode: undefined,
+    exitSignal: undefined,
+    exitVerified: false,
+    cdpClosed: false,
+    cleanup: 'pending',
+    cleanupRootExisted: false,
+    cleanupRootAbsent: false,
+    cleanupVerified: false,
+    finalScopedProcessAuditPassed: false,
+    finalScopedProcessAuditCount: 0,
+    errorCode: undefined
+  };
+  let prepared;
+  let child;
+  let browser;
+  let control;
+  let exitInfo;
+  let exitPromise;
+  let launchExecutable = executable;
+  let remoteDebuggingPort;
+  let coldTree = [];
+  let hotTree = [];
+  let mergedTree = [];
+  try {
+    prepared = await prepareRun();
+    const portableMarker = path.join(path.dirname(executable), 'resources', 'portable.marker');
+    const portableMode = await stat(portableMarker).then(value => value.isFile()).catch(() => false);
+    if (requirePortable && !portableMode) throw new Error('PORTABLE_MARKER_MISSING');
+    if (portableMode) {
+      const sourceRoot = path.dirname(executable);
+      const portableRoot = path.join(prepared.root, 'portable-app');
+      await cp(sourceRoot, portableRoot, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        filter: source => shouldCopyPortableEntry(sourceRoot, source)
+      });
+      launchExecutable = path.join(portableRoot, path.basename(executable));
+      const copiedMarker = path.join(path.dirname(launchExecutable), 'resources', 'portable.marker');
+      if (!await stat(copiedMarker).then(value => value.isFile()).catch(() => false)) {
+        throw new Error('PORTABLE_MARKER_COPY_FAILED');
+      }
+      const portableData = path.join(portableRoot, 'portable-data');
+      await mkdir(portableData, { recursive: true });
+      await writeFile(path.join(portableData, 'settings.json'), `${JSON.stringify(prepared.settings, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+    }
+
+    remoteDebuggingPort = await findFreeLoopbackPort();
+    const environment = createTestEnvironment(prepared.root, prepared.appData, prepared.localAppData);
+    const spawnStartedAt = performance.now();
+    child = spawn(launchExecutable, [
+      `--user-data-dir=${prepared.userData}`,
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${remoteDebuggingPort}`
+    ], { cwd: path.dirname(launchExecutable), env: environment, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
+    record.spawnVerified = safePid(child.pid) !== undefined;
+    child.stdout?.on('data', () => undefined);
+    child.stderr?.on('data', () => undefined);
+    exitPromise = observeExit(child).then(info => { exitInfo = info; return info; });
+
+    const cdpEndpoint = await waitForCdp(remoteDebuggingPort, child);
+    try {
+      browser = await chromium.connectOverCDP(cdpEndpoint, {
+        timeout: 15_000,
+        isLocal: true,
+        noDefaults: true
+      });
+    } catch (error) {
+      throw stableStageError(error, 'CDP_CONNECT_FAILED', 'CDP_CONNECT_TIMEOUT');
+    }
+    control = await waitForControlWindow(browser, child, exitPromise);
+    record.spawnToControlWindowMs = Math.ceil(performance.now() - spawnStartedAt);
+    record.controlWindowVerified = true;
+    record.controlWindowOperational = await verifyControlWindowOperational(control);
+    if (!record.controlWindowOperational) throw new Error('CONTROL_WINDOW_NOT_OPERATIONAL');
+
+    const coldReady = await waitForRuntimeReady(control, child, exitPromise, 1);
+    record.coldRuntimeReadyVerified = true;
+    record.coldGeneration = coldReady.snapshot.runtime.generation;
+    coldTree = await waitForProcessTree(windowsProcesses, child.pid, coldReady.snapshot.runtime.pid);
+    record.coldProcessTreeCount = coldTree.length;
+    record.coldProcessTreeObserved = hasObservedProcessTree(coldTree, child.pid, coldReady.snapshot.runtime.pid);
+    if (!record.coldProcessTreeObserved) throw new Error('RUNTIME_COLD_PROCESS_TREE_NOT_OBSERVED');
+
+    const minimumGeneration = coldReady.snapshot.runtime.generation + 1;
+    if (!Number.isSafeInteger(minimumGeneration)) throw new Error('RUNTIME_GENERATION_INVALID');
+    const restartStartedAt = performance.now();
+    record.restartRequested = true;
+    const restartSnapshot = await withStableStage(
+      () => withTimeout(control.evaluate(() => window.adhdOne.restartRuntime()), QUALIFICATION_LIMITS.hotReadyMs, 'RUNTIME_RESTART'),
+      'RUNTIME_RESTART_FAILED',
+      'RUNTIME_RESTART_TIMEOUT'
+    );
+    record.restartRuntimeAccepted = restartSnapshot?.state === 'ready'
+      && Number.isSafeInteger(restartSnapshot?.generation)
+      && restartSnapshot.generation >= minimumGeneration;
+    if (!record.restartRuntimeAccepted) throw new Error('RUNTIME_RESTART_NOT_READY');
+
+    const hotReady = await waitForRuntimeReady(control, child, exitPromise, minimumGeneration);
+    record.restartReadyVerified = true;
+    record.hotGeneration = hotReady.snapshot.runtime.generation;
+    record.restartToReadyMs = Math.ceil(performance.now() - restartStartedAt);
+    hotTree = await waitForProcessTree(windowsProcesses, child.pid, hotReady.snapshot.runtime.pid);
+    record.hotProcessTreeCount = hotTree.length;
+    record.hotProcessTreeObserved = hasObservedProcessTree(hotTree, child.pid, hotReady.snapshot.runtime.pid);
+    if (!record.hotProcessTreeObserved) throw new Error('RUNTIME_HOT_PROCESS_TREE_NOT_OBSERVED');
+    record.electronRootStable = electronRootIdentityStable(coldTree, hotTree, child.pid);
+    if (!record.electronRootStable) throw new Error('ELECTRON_ROOT_IDENTITY_UNSTABLE');
+    mergedTree = mergeProcessTrees(coldTree, hotTree);
+    record.mergedProcessTreeCount = mergedTree.length;
+    if (mergedTree.length < 3) throw new Error('RUNTIME_COLD_HOT_PROCESS_TREES_INCOMPLETE');
+  } catch (error) {
+    record.errorCode = stableStageErrorCode(error, 'QUALIFICATION_FAILED', 'QUALIFICATION_TIMEOUT');
+  } finally {
+    if (child && exitPromise && !exitInfo) {
+      const termination = await terminateQualificationApplication(child, exitPromise, control);
+      record.quitAccepted = termination.quitAccepted === true;
+      record.gracefulExitVerified = termination.gracefulExitVerified === true;
+      record.forcedTermination = termination.forcedTermination === true;
+      record.errorCode ??= termination.errorCode;
+      if (termination.quitStartedAt !== undefined && termination.exitAt !== undefined) {
+        record.quitToExitMs = Math.max(0, termination.exitAt - termination.quitStartedAt);
+      }
+    }
+    if (browser) {
+      try { await browser.close(); } catch { /* already disconnected */ }
+    }
+    if (exitInfo) {
+      record.exitCode = exitInfo.code;
+      record.exitSignal = exitInfo.signal;
+      record.errorCode ??= exitInfo.errorCode;
+      if (record.quitToExitMs === undefined && record.quitAccepted) {
+        record.errorCode ??= 'APP_QUIT_EXIT_MEASUREMENT_MISSING';
+      }
+    }
+
+    mergedTree = mergeProcessTrees(coldTree, hotTree);
+    record.mergedProcessTreeCount = mergedTree.length;
+    if (mergedTree.length) {
+      try {
+        const remaining = await waitForProcessesGone(mergedTree);
+        record.processTreeExited = remaining.length === 0;
+      } catch (error) {
+        record.errorCode ??= stableStageErrorCode(error, 'PROCESS_TREE_AUDIT_FAILED', 'PROCESS_TREE_AUDIT_TIMEOUT');
+      }
+    }
+    record.cdpClosed = await cdpClosed(remoteDebuggingPort ?? 0);
+
+    if (prepared) {
+      await cleanupPreparedRoot(prepared, record);
+    } else {
+      record.cleanup = 'not-created';
+      record.cleanupVerified = false;
+    }
+    const processAudit = await auditScopedProcesses({
+      startedAt,
+      rootPid: child?.pid,
+      knownProcesses: mergedTree,
+      executablePaths: [executable, launchExecutable],
+      tempRoots: prepared ? [prepared.root] : [],
+      commandMarkers: prepared && remoteDebuggingPort
+        ? [`--user-data-dir=${prepared.userData}`, `--remote-debugging-port=${remoteDebuggingPort}`]
+        : []
+    });
+    const processTreesObserved = record.coldProcessTreeObserved && record.hotProcessTreeObserved;
+    record.finalScopedProcessAuditPassed = processTreesObserved && processAudit.verified === true;
+    record.finalScopedProcessAuditCount = processAudit.pids.length;
+    record.errorCode ??= processAudit.errorCode;
+    if (!processTreesObserved) record.errorCode ??= 'RUNTIME_COLD_HOT_PROCESS_TREE_NOT_OBSERVED';
+    else if (!record.finalScopedProcessAuditPassed) record.errorCode ??= 'PROCESS_PATH_AUDIT_FOUND';
+    if (prepared && record.cleanup === 'removed' && !await pathIsAbsent(prepared.root)) {
+      record.cleanupRootAbsent = false;
+      record.cleanup = 'failed';
+      record.cleanupVerified = false;
+      record.errorCode ??= 'CLEANUP_ROOT_REAPPEARED';
+    }
+
+    record.exitVerified = record.quitAccepted
+      && record.gracefulExitVerified
+      && !record.forcedTermination
+      && record.quitToExitMs !== undefined
+      && record.exitCode === 0
+      && !record.exitSignal
+      && record.processTreeExited
+      && record.cdpClosed
+      && record.finalScopedProcessAuditPassed;
+    record.passed = record.spawnVerified
+      && record.controlWindowVerified
+      && record.controlWindowOperational
+      && record.coldRuntimeReadyVerified
+      && record.restartRequested
+      && record.restartRuntimeAccepted
+      && record.restartReadyVerified
+      && record.electronRootStable
+      && record.spawnToControlWindowMs <= QUALIFICATION_LIMITS.firstInteractiveMs
+      && record.restartToReadyMs <= QUALIFICATION_LIMITS.hotReadyMs
+      && record.quitToExitMs <= QUALIFICATION_LIMITS.exitMs
+      && record.exitVerified
+      && record.cleanupVerified
+      && record.finalScopedProcessAuditPassed;
+    if (!record.passed) record.errorCode ??= qualificationFailureCode(record);
+  }
+  return record;
+}
+
+async function runQualification(executable, chromium, requirePortable = false) {
+  return runQualificationCycle(executable, chromium, requirePortable);
+}
+
 async function runCycle(executable, cycle, chromium, scenario = 'launch', requirePortable = false) {
   const startedAt = Date.now();
   const record = {
@@ -1600,14 +2044,14 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
   return record;
 }
 
-async function resolveOutputPath(argument) {
+async function resolveOutputPath(argument, scenario = 'launch') {
   const resolved = path.resolve(argument);
   let existing;
   try { existing = await stat(resolved); } catch { existing = undefined; }
   const directory = existing?.isDirectory() || /[\\/]$/u.test(argument) || path.extname(resolved).toLowerCase() !== '.json';
   if (directory) {
     await mkdir(resolved, { recursive: true });
-    return path.join(resolved, 'packaged-evidence.json');
+    return path.join(resolved, scenario === 'qualification' ? 'qualification-evidence.json' : 'packaged-evidence.json');
   }
   await mkdir(path.dirname(resolved), { recursive: true });
   return resolved;
@@ -1620,8 +2064,29 @@ async function main() {
   const executable = path.resolve(options.exe);
   const executableStat = await stat(executable).catch(() => undefined);
   if (!executableStat?.isFile()) throw new Error('EXE_NOT_FOUND');
-  const output = await resolveOutputPath(options.output);
+  const output = await resolveOutputPath(options.output, options.scenario);
   const { chromium } = await import('playwright');
+  if (options.scenario === 'qualification') {
+    const result = await runQualification(executable, chromium, options.requirePortable);
+    const evidence = sanitizeQualificationEvidence({
+      generatedAt: new Date().toISOString(),
+      spawnVerified: result.spawnVerified,
+      coldStartVerified: result.spawnVerified && result.controlWindowVerified && result.controlWindowOperational && result.coldRuntimeReadyVerified,
+      restartRuntimeVerified: result.restartRequested && result.restartRuntimeAccepted && result.restartReadyVerified,
+      electronRootStable: result.electronRootStable,
+      quitAccepted: result.quitAccepted,
+      gracefulExitVerified: result.gracefulExitVerified,
+      exitVerified: result.exitVerified,
+      cleanupVerified: result.cleanupVerified,
+      finalScopedProcessAuditPassed: result.finalScopedProcessAuditPassed,
+      passed: result.passed,
+      cycles: [result]
+    });
+    await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8' });
+    console.log(`${evidence.passed ? 'PASS' : 'FAIL'} packaged qualification: ${evidence.passed ? '1/1' : '0/1'}; evidence=${path.basename(output)}`);
+    if (!evidence.passed) process.exitCode = 1;
+    return;
+  }
   const cycles = [];
   for (let cycle = 1; cycle <= options.cycles; cycle += 1) {
     const result = await runCycle(executable, cycle, chromium, options.scenario, options.requirePortable);

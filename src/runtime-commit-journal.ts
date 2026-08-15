@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, rename as fsRename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { writeFileAtomic } from './settings-store.js';
 import { assertNoWindowsReparseComponents } from './windows-platform.js';
@@ -365,9 +366,23 @@ async function safeRename(
   source: string,
   destination: string
 ): Promise<void> {
-  await assertNoReparseComponents(operations, source);
-  await assertNoReparseComponents(operations, destination);
-  await operations.rename(source, destination);
+  const retryDelays = [0, 50, 100, 200, 400, 800, 1_000] as const;
+  for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+    if (retryDelays[attempt]! > 0) await delay(retryDelays[attempt]);
+    // A Windows scanner can release one handle while another filesystem entry
+    // changes. Revalidate the complete path immediately before every retry.
+    await assertNoReparseComponents(operations, source);
+    await assertNoReparseComponents(operations, destination);
+    try {
+      await operations.rename(source, destination);
+      return;
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : '';
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(code) || attempt === retryDelays.length - 1) throw error;
+    }
+  }
 }
 
 async function safeRemove(operations: RuntimeCommitFsOperations, filename: string): Promise<void> {

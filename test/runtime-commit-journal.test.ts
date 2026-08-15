@@ -182,6 +182,34 @@ describe('runtime commit journal data contract', () => {
 });
 
 describe('recoverRuntimeCommit', () => {
+  it('retries transient Windows rename sharing violations and revalidates paths', async () => {
+    const fake = await fakeFilesystem();
+    const originalRename = fake.operations.rename;
+    let attempts = 0;
+    fake.operations.rename = async (source, destination) => {
+      attempts += 1;
+      if (attempts <= 2) throw Object.assign(new Error('scanner still holds the directory'), { code: 'EPERM' });
+      await originalRename(source, destination);
+    };
+
+    await recoverRuntimeCommit(request(fake), fake.operations);
+    expect(attempts).toBeGreaterThanOrEqual(3);
+    expect(fake.reparseChecks.length).toBeGreaterThan(10);
+    expect(fake.state).toEqual(state('B'));
+  });
+
+  it('does not retry a non-transient rename failure', async () => {
+    const fake = await fakeFilesystem();
+    let attempts = 0;
+    fake.operations.rename = async () => {
+      attempts += 1;
+      throw Object.assign(new Error('invalid rename'), { code: 'EINVAL' });
+    };
+
+    await expect(recoverRuntimeCommit(request(fake), fake.operations)).rejects.toThrow('invalid rename');
+    expect(attempts).toBe(1);
+  });
+
   it('recovers from every durable phase and cleans only transaction paths', async () => {
     const fake = await fakeFilesystem();
     fake.entries.add(path.join(fake.root, '.runtime-commit-journal.json'));

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NtExecutable } from 'pe-library';
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 
@@ -415,6 +416,18 @@ async function assertPhysicalOutputLocation(repositoryRoot, outputDirectory) {
   if (isSameOrWithin(physicalExisting, physicalRoot)) fail(WIN11_RUNNER_ERROR_CODES.OUTPUT_REJECTED);
 }
 
+export async function validateWin11RunnerNode(filename) {
+  try {
+    const executable = NtExecutable.from(await fs.readFile(filename), { ignoreCert: true });
+    if (executable.is32bit() || executable.newHeader.fileHeader.machine !== 0x8664) {
+      fail(WIN11_RUNNER_ERROR_CODES.NODE_INVALID);
+    }
+  } catch (error) {
+    if (error instanceof Win11RunnerError) throw error;
+    fail(WIN11_RUNNER_ERROR_CODES.NODE_INVALID);
+  }
+}
+
 async function availablePackagePaths(plan) {
   const available = [];
   for (const packageEntry of plan.packages) {
@@ -551,6 +564,7 @@ async function writeManifest(plan, staging) {
       tool: WIN11_RUNNER_TOOL,
       manifestFile: WIN11_RUNNER_MANIFEST_FILE,
       nodeExecutable: WIN11_RUNNER_NODE_FILE,
+      nodeArchitecture: 'x64',
       e2eScripts: plan.scripts.map(script => script.destinationPath),
       dependencyRoots: [...plan.dependencyRoots],
       packages: plan.packages.map(packageEntry => ({
@@ -626,6 +640,9 @@ export async function prepareWin11Runner(options = {}) {
     packageLock,
     availablePackagePaths: await availablePackagePaths(preliminaryPlan)
   });
+  const nodeValidator = options.nodeValidator ?? validateWin11RunnerNode;
+  if (typeof nodeValidator !== 'function') fail(WIN11_RUNNER_ERROR_CODES.INVALID_ARGUMENT);
+  await nodeValidator(plan.node.sourcePath);
 
   await assertPhysicalOutputLocation(plan.repositoryRoot, plan.outputDirectory);
   try {

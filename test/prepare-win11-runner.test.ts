@@ -11,7 +11,8 @@ import {
   WIN11_RUNNER_MANIFEST_FILE,
   parseRunnerArgs,
   planWin11Runner,
-  prepareWin11Runner
+  prepareWin11Runner,
+  validateWin11RunnerNode
 } from '../scripts/prepare-win11-runner.mjs';
 
 type LockEntry = {
@@ -111,6 +112,7 @@ function planInput(fixture: Fixture, overrides: Record<string, unknown> = {}) {
     repositoryRoot: fixture.repositoryRoot,
     outputDirectory: fixture.output,
     nodeExecutable: fixture.node,
+    nodeValidator: async () => undefined,
     packageLock: fixture.lockfile,
     ...overrides
   };
@@ -188,6 +190,13 @@ describe('Win11 runner closure planner', () => {
 });
 
 describe('Win11 runner preparation', () => {
+  it('rejects a non-PE Node executable when the production validator is used', async () => {
+    const fixture = await createFixture();
+    await expect(validateWin11RunnerNode(fixture.node)).rejects.toThrow(WIN11_RUNNER_ERROR_CODES.NODE_INVALID);
+    await expect(prepareWin11Runner(planInput(fixture, { nodeValidator: undefined })))
+      .rejects.toThrow(WIN11_RUNNER_ERROR_CODES.NODE_INVALID);
+  });
+
   it('stages the fake node and fixed scripts, writes path-free hashes, and publishes the closure', async () => {
     const fixture = await createFixture();
     const result = await prepareWin11Runner(planInput(fixture));
@@ -196,9 +205,11 @@ describe('Win11 runner preparation', () => {
       files: Array<{ path: string; size: number; sha256: string }>;
       totalBytes: number;
       packages: Array<{ lockPath: string }>;
+      nodeArchitecture: string;
     };
 
     expect(result.manifest).toEqual(manifest);
+    expect(manifest.nodeArchitecture).toBe('x64');
     expect(JSON.stringify(manifest)).not.toContain(fixture.repositoryRoot);
     expect(JSON.stringify(manifest)).not.toContain(fixture.output);
     expect(manifest.files.some(file => file.path === 'node.exe')).toBe(true);

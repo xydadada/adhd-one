@@ -1,12 +1,19 @@
 param(
   [Parameter(Mandatory = $true)][string]$SetupPath,
-  [Parameter(Mandatory = $true)][string]$EvidenceDirectory
+  [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+  [string]$NodePath = 'node'
 )
 
 $ErrorActionPreference = 'Stop'
 $setup = [IO.Path]::GetFullPath($SetupPath)
 $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'INSTALLED_E2E_SETUP_MISSING' }
+if ([IO.Path]::IsPathFullyQualified($NodePath)) {
+  $NodePath = [IO.Path]::GetFullPath($NodePath)
+  if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { throw 'INSTALLED_E2E_NODE_MISSING' }
+} elseif ($NodePath -ne 'node') {
+  throw 'INSTALLED_E2E_NODE_INVALID'
+}
 
 $tempRoot = [IO.Path]::GetFullPath($(if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { [IO.Path]::GetTempPath() } else { $env:RUNNER_TEMP }))
 $runRoot = Join-Path $tempRoot ('adhd-one-installed-' + [guid]::NewGuid().ToString('N'))
@@ -167,9 +174,9 @@ try {
     '--evidence-dir',
     ('"{0}"' -f $evidence)
   )
-  $suite = Start-Process -FilePath 'node' -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden
+  $suite = Start-Process -FilePath $NodePath -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden
   if (-not $suite.WaitForExit(1800000)) {
-    try { $suite.Kill($true) } catch {}
+    try { & taskkill.exe /PID $suite.Id /T /F | Out-Null } catch {}
     try { $suite.WaitForExit(15000) | Out-Null } catch {}
     throw 'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'
   }

@@ -149,9 +149,9 @@ describe('installed E2E script contracts', () => {
 
   it('uses a bounded outer packaged-suite watchdog and preserves stable timeout codes', async () => {
     const script = await readFile(installedScriptPath, 'utf8');
-    expect(script).toContain("Start-Process -FilePath 'node' -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden");
+    expect(script).toContain('Start-Process -FilePath $NodePath -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden');
+    expect(script).toContain('& taskkill.exe /PID $suite.Id /T /F');
     expect(script).toContain('$suite.WaitForExit(1800000)');
-    expect(script).toContain('try { $suite.Kill($true) } catch {}');
     expect(script).toContain('try { $suite.WaitForExit(15000) | Out-Null } catch {}');
     expect(script).toContain("throw 'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'");
   });

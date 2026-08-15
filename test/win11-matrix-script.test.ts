@@ -34,7 +34,7 @@ describe('Windows 11 path matrix script contract', () => {
     expect(rowNames).toEqual(['ascii', '中文', '中文 空格', 'long-path']);
     expect(script).toContain("$targetInstallPathLength = 280");
     expect(script).toContain("'adhd-one-installed-' + $guidPlaceholder");
-    expect(script).toContain("if ($installProbe.Length -lt 270 -or $installProbe.Length -gt 290)");
+    expect(script).toContain('if ($installProbe.Length -ne $targetInstallPathLength)');
     expect(script).toContain("$runnerTemp = $longPrefix + ('x' * $paddingLength)");
     expect(script).toContain("Name = $definition.Name");
     expect(script).toContain('RUNNER_TEMP = [IO.Path]::GetFullPath($runnerTemp)');
@@ -48,10 +48,12 @@ describe('Windows 11 path matrix script contract', () => {
   it('references only the existing installed and evidence verifier scripts', async () => {
     const script = await readMatrixScript();
     const installedCall = script.indexOf('& $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence');
-    const verifierCall = script.indexOf('& node $verifyScript $row.Evidence');
+    const verifierCall = script.indexOf('& $nodePath $verifyScript $row.Evidence');
 
     expect(script).toContain("Join-Path $repoRoot 'scripts/e2e/installed.ps1'");
     expect(script).toContain("Join-Path $repoRoot 'scripts/verify-evidence.mjs'");
+    expect(script).toContain("Join-Path $repoRoot 'node.exe'");
+    expect(script).toContain('-NodePath $nodePath');
     expect(installedCall).toBeGreaterThanOrEqual(0);
     expect(verifierCall).toBeGreaterThan(installedCall);
     expect(script).toContain("if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }");

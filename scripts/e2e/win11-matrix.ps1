@@ -118,6 +118,9 @@ $installedScript = Get-ExistingFile `
 $verifyScript = Get-ExistingFile `
   -Path (Join-Path $repoRoot 'scripts/verify-evidence.mjs') `
   -ErrorCode 'WIN11_MATRIX_VERIFY_SCRIPT_MISSING'
+$nodePath = Get-ExistingFile `
+  -Path (Join-Path $repoRoot 'node.exe') `
+  -ErrorCode 'WIN11_MATRIX_NODE_MISSING'
 
 $evidenceRoot = ConvertTo-AbsolutePath -Value $EvidenceRoot -ErrorCode 'WIN11_MATRIX_EVIDENCE_NOT_ABSOLUTE'
 if (Test-Path -LiteralPath $evidenceRoot) { throw 'WIN11_MATRIX_EVIDENCE_MUST_BE_NEW' }
@@ -184,7 +187,7 @@ $matrix = foreach ($definition in $matrixDefinitions) {
     }
     $runnerTemp = $longPrefix + ('x' * $paddingLength)
     $installProbe = $runnerTemp + $installPathSuffix
-    if ($installProbe.Length -lt 270 -or $installProbe.Length -gt 290) {
+    if ($installProbe.Length -ne $targetInstallPathLength) {
       throw 'WIN11_MATRIX_LONG_PATH_INVALID'
     }
   }
@@ -231,10 +234,10 @@ try {
     $env:TEMP = $row.TEMP
     $env:TMP = $row.TMP
 
-    & $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence
+    & $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence -NodePath $nodePath
     if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }
 
-    & node $verifyScript $row.Evidence
+    & $nodePath $verifyScript $row.Evidence
     if ($LASTEXITCODE -ne 0) { throw ('WIN11_MATRIX_VERIFY_FAILED_{0}' -f $row.Name) }
   }
 }

@@ -192,6 +192,15 @@ try {
   if ($suite.ExitCode -ne 0) { throw 'INSTALLED_E2E_PACKAGED_SUITE_FAILED' }
   $suitePassed = $true
   if (@(Get-InstallProcesses $installRoot).Count -ne 0) { throw 'INSTALLED_E2E_PROCESS_REMAINED' }
+  if ($Suite -eq 'qualification') {
+    $collector = Join-Path $PSScriptRoot 'collect-win11-evidence.mjs'
+    if (-not (Test-Path -LiteralPath $collector -PathType Leaf)) { throw 'INSTALLED_E2E_EVIDENCE_COLLECTOR_MISSING' }
+    & $NodePath $collector `
+      --exe $apps[0].FullName `
+      --qualification (Join-Path $evidence 'qualification-evidence.json') `
+      --output (Join-Path $evidence 'win11-evidence.json')
+    if ($LASTEXITCODE -ne 0) { throw 'INSTALLED_E2E_EVIDENCE_COLLECTION_FAILED' }
+  }
 } catch {
   $primaryFailure = $_
   $candidate = [string]$_.Exception.Message

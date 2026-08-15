@@ -19,6 +19,7 @@ export const FIXED_E2E_SCRIPTS = Object.freeze([
   'scripts/e2e/run-packaged-suite.mjs',
   'scripts/e2e/verify-win11-evidence.mjs',
   'scripts/e2e/win11-evidence-builder.mjs',
+  'scripts/e2e/collect-win11-evidence.mjs',
   'scripts/e2e/windows-process-cpu.mjs',
   'scripts/e2e/installed.ps1',
   'scripts/verify-evidence.mjs',

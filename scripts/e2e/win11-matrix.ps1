@@ -251,9 +251,11 @@ try {
     if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }
 
     $qualificationPath = Join-Path $row.Evidence 'qualification-evidence.json'
+    $win11EvidencePath = Join-Path $row.Evidence 'win11-evidence.json'
     $installedSummaryPath = Join-Path $row.Evidence 'installed-summary.json'
     try {
       $qualification = Get-Content -LiteralPath $qualificationPath -Raw -Encoding utf8 | ConvertFrom-Json
+      $win11Evidence = Get-Content -LiteralPath $win11EvidencePath -Raw -Encoding utf8 | ConvertFrom-Json
       $installedSummary = Get-Content -LiteralPath $installedSummaryPath -Raw -Encoding utf8 | ConvertFrom-Json
     } catch {
       throw ('WIN11_MATRIX_EVIDENCE_INVALID_{0}' -f $row.Name)
@@ -263,6 +265,11 @@ try {
         $qualification.passed -ne $true -or
         $qualification.cyclesRequested -ne 1 -or
         $qualification.cyclesCompleted -ne 1 -or
+        $win11Evidence.tool -ne 'adhd-one-win11-evidence' -or
+        $win11Evidence.platform.os -ne 'Windows 11' -or
+        $win11Evidence.platform.architecture -ne 'x64' -or
+        $win11Evidence.executable.sha256Verified -ne $true -or
+        $win11Evidence.processes.residualCount -ne 0 -or
         $installedSummary.tool -ne 'adhd-one-installed-e2e' -or
         $installedSummary.passed -ne $true) {
       throw ('WIN11_MATRIX_VERIFY_FAILED_{0}' -f $row.Name)

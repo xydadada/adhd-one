@@ -63,6 +63,8 @@ describe('Windows 11 path matrix script contract', () => {
     expect(verifierCall).toBeGreaterThan(installedCall);
     expect(script).toContain("if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }");
     expect(script).toContain("$qualification.tool -ne 'adhd-one-packaged-qualification'");
+    expect(script).toContain("$win11Evidence.tool -ne 'adhd-one-win11-evidence'");
+    expect(script).toContain('$win11Evidence.executable.sha256Verified -ne $true');
     expect(script).toContain("$installedSummary.tool -ne 'adhd-one-installed-e2e'");
     expect(script).toContain('foreach ($row in $matrix)');
     expect(script).not.toMatch(/Start-(?:Job|ThreadJob)/iu);

@@ -141,7 +141,7 @@ function looksLikePath(value) {
       || value === '..');
 }
 
-function hasDuplicateJsonKeys(text) {
+export function hasDuplicateJsonKeys(text) {
   const scopes = [];
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];

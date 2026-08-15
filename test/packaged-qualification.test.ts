@@ -75,6 +75,7 @@ describe('packaged qualification contracts', () => {
         passed: true,
         spawnVerified: true,
         hostToolchainPathExcluded: true,
+        executableSha256: 'a'.repeat(64),
         spawnToControlWindowMs: 12,
         controlWindowVerified: true,
         controlWindowOperational: true,
@@ -129,6 +130,7 @@ describe('packaged qualification contracts', () => {
     expect(value.cycles[0]).toMatchObject({
       scenario: 'qualification',
       hostToolchainPathExcluded: true,
+      executableSha256: 'a'.repeat(64),
       coldGeneration: 1,
       hotGeneration: 2,
       idleCpuMeasured: true,
@@ -139,7 +141,7 @@ describe('packaged qualification contracts', () => {
       forcedTermination: false,
       errorCode: 'QUALIFICATION_FAILED'
     });
-    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|"cpu":|"host":|sha256|deadbeef/iu);
+    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|"cpu":|"host":|deadbeef/iu);
   });
 
   it('proves the app launch environment excludes the inherited host toolchain PATH', () => {
@@ -180,6 +182,7 @@ describe('packaged qualification contracts', () => {
     const cycle = {
       passed: true,
       hostToolchainPathExcluded: true,
+      executableSha256: 'a'.repeat(64),
       spawnToControlWindowMs: 1,
       restartToReadyMs: 1,
       idleCpuMeasured: true,
@@ -196,6 +199,7 @@ describe('packaged qualification contracts', () => {
     const base = {
       passed: true,
       hostToolchainPathExcluded: true,
+      executableSha256: 'a'.repeat(64),
       spawnToControlWindowMs: 1,
       restartToReadyMs: 1,
       idleCpuMeasured: true,
@@ -219,12 +223,13 @@ describe('packaged qualification contracts', () => {
     expect(qualification.match(/spawn\(/gu)).toHaveLength(1);
     expect(qualification).toContain('waitForControlWindow(browser, child, exitPromise)');
     expect(qualification).toContain('isHostToolchainPathExcluded(environment)');
+    expect(qualification).toContain('collectExecutableProof(launchExecutable)');
     expect(qualification).toContain('control.evaluate(() => window.adhdOne.restartRuntime())');
     expect(qualification).toContain('waitForRuntimeReady(control, child, exitPromise, minimumGeneration)');
     expect(qualification).toContain('mergeProcessTrees(coldTree, hotTree)');
     expect(qualification).toContain('measureWindowsProcessCpu({ rootPid: child.pid })');
     expect(qualification).toContain('record.idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent');
-    expect(qualification).not.toMatch(/requestHostDescribe|host\.describe|sha256|hash/iu);
+    expect(qualification).not.toMatch(/requestHostDescribe|host\.describe/iu);
 
     const terminationStart = script.indexOf('async function terminateQualificationApplication');
     const terminationEnd = script.indexOf('async function prepareRun', terminationStart);

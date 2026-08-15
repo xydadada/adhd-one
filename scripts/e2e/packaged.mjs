@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server';
 import { measureWindowsProcessCpu } from './windows-process-cpu.mjs';
+import { collectExecutableProof } from './win11-host-proof.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +37,7 @@ const PROCESS_AUDIT_KINDS = new Set(['known-identity', 'known-ancestor', 'temp-r
 const WORKSPACE_PROVIDER_SEQUENCES = new Set(['not-run', 'matched', 'mismatch', 'unknown']);
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const SAFE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const TRUSTED_ERROR_CODE_PREFIXES = [
   'APP_', 'APPLICATION_', 'RUNTIME_', 'CONTROL_', 'HOST_', 'CDP_', 'E2E_',
   'LOOPBACK_', 'PROCESS_', 'EXE_', 'INVALID_', 'NOT_', 'ACCESS_', 'NETWORK_',
@@ -275,6 +277,9 @@ function sanitizeQualificationCycle(record) {
   const restartToReadyMs = nonNegativeInteger(cycle.restartToReadyMs);
   const idleCpuPercent = nonNegativeFiniteNumber(cycle.idleCpuPercent);
   const idleCpuProcessCount = nonNegativeInteger(cycle.idleCpuProcessCount, 0);
+  const executableSha256 = typeof cycle.executableSha256 === 'string' && SHA256_PATTERN.test(cycle.executableSha256)
+    ? cycle.executableSha256
+    : undefined;
   const quitToExitMs = nonNegativeInteger(cycle.quitToExitMs);
   const withinLimits = spawnToControlWindowMs !== undefined && spawnToControlWindowMs <= QUALIFICATION_LIMITS.firstInteractiveMs
     && restartToReadyMs !== undefined && restartToReadyMs <= QUALIFICATION_LIMITS.hotReadyMs
@@ -287,9 +292,10 @@ function sanitizeQualificationCycle(record) {
     cycle: nonNegativeInteger(cycle.cycle, 1),
     scenario: 'qualification',
     passed: cycle.passed === true && !forcedTermination && hostToolchainPathExcluded
-      && idleCpuMeasured && idleCpuProcessCount > 0 && withinLimits,
+      && executableSha256 !== undefined && idleCpuMeasured && idleCpuProcessCount > 0 && withinLimits,
     spawnVerified: cycle.spawnVerified === true,
     hostToolchainPathExcluded,
+    executableSha256,
     spawnToControlWindowMs,
     controlWindowVerified: cycle.controlWindowVerified === true,
     controlWindowOperational: cycle.controlWindowOperational === true,
@@ -1531,6 +1537,7 @@ function cycleFailureCode(record) {
 function qualificationFailureCode(record) {
   if (record.forcedTermination) return 'APPLICATION_DID_NOT_EXIT_GRACEFULLY';
   if (!record.spawnVerified) return 'APPLICATION_SPAWN_FAILED';
+  if (!record.executableSha256) return 'EXE_SHA256_MISSING';
   if (!record.controlWindowVerified || !record.controlWindowOperational) return 'CONTROL_WINDOW_NOT_OPERATIONAL';
   if (!record.coldRuntimeReadyVerified) return 'RUNTIME_COLD_START_FAILED';
   if (!record.restartRequested || !record.restartRuntimeAccepted) return 'RUNTIME_RESTART_FAILED';
@@ -1554,6 +1561,7 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     passed: false,
     spawnVerified: false,
     hostToolchainPathExcluded: false,
+    executableSha256: undefined,
     spawnToControlWindowMs: undefined,
     controlWindowVerified: false,
     controlWindowOperational: false,
@@ -1629,6 +1637,8 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     const environment = createTestEnvironment(prepared.root, prepared.appData, prepared.localAppData);
     record.hostToolchainPathExcluded = isHostToolchainPathExcluded(environment);
     if (!record.hostToolchainPathExcluded) throw new Error('HOST_TOOLCHAIN_PATH_NOT_EXCLUDED');
+    const executableProof = await collectExecutableProof(launchExecutable);
+    record.executableSha256 = executableProof.sha256;
     const spawnStartedAt = performance.now();
     child = spawn(launchExecutable, [
       `--user-data-dir=${prepared.userData}`,
@@ -1780,6 +1790,7 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
       && record.finalScopedProcessAuditPassed;
     record.passed = record.spawnVerified
       && record.hostToolchainPathExcluded
+      && typeof record.executableSha256 === 'string'
       && record.controlWindowVerified
       && record.controlWindowOperational
       && record.coldRuntimeReadyVerified

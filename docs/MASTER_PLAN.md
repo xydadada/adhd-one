@@ -25,9 +25,9 @@
 
 当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 和 `v0.2.0-beta.2` 均为 prerelease；`v0.2.0-beta.2` 已于 2026-08-15 发布，11 个 Release API 上传资产可公开下载（GitHub 另提供自动生成的源码归档）；`v0.2.0` Stable 尚未发布。
 
-当前验证进度：**84%**（U1 +2、U2 +2、U3 +1）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。打包后 Runtime 回滚场景已经实现并通过本地契约测试，待对应 commit 的 Windows Server 2025 最终 EXE 证据通过后计入 U3 最后 1 分并更新为 85%；真实 GitHub 应用更新 feed、Stable 发布、干净 Windows 11 与性能结果仍未计入。
+当前验证进度：**84%**（U1 +2、U2 +2、U3 +1）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。上一版安装后回滚场景已在 Windows Server 2025 run `31869403510` 通过；当前批次又将证据强化为真实存在但版本不匹配的候选槽，并要求 ready 时及正常退出后都确认持久回滚，待新 commit 的最终 EXE 证据通过后计入 U3 最后 1 分并更新为 85%。真实 electron-updater GitHub provider 的 loopback feed、Stable/Preview fallback、SHA-512 成功与失败路径已本地通过，但真实已发布资产的 attestation 与重启安装、Stable 发布、干净 Windows 11 和性能结果仍未计入。
 
-最新本地证据：`npm run check` 通过 27 个 test files（304 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 23 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。Runtime journal 的目录发布会对 Windows `EPERM`、`EBUSY`、`EACCES` 短暂共享冲突执行有界退避，并在每次重试前重新验证 reparse 安全边界；其他错误仍立即 fail closed。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
+最新本地证据：`npm run check` 通过 28 个 test files（313 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 24 个直接执行或打包的 JS-family 文件；`npm run e2e:updater-feed` 输出 `UPDATER_FEED_E2E_OK`；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。Runtime journal 的目录发布会对 Windows `EPERM`、`EBUSY`、`EACCES` 短暂共享冲突执行有界退避，并在每次重试前重新验证 reparse 安全边界；其他错误仍立即 fail closed。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
 
 2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
 
@@ -355,7 +355,7 @@ npm run test:doctor
 npm run check
 ```
 
-当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 26 个 test files（284 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
+当前核验结果：`npm run test:doctor` 为 20/20；最近一次完整 `npm run check` 为 28 个 test files（313 个通过、1 个 Windows 8.3 alias 回归跳过）；最终 Portable EXE 的官方 mock PowerShell tool-call 往返已通过。
 
 后续阶段待新增（当前不可执行）：
 

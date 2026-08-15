@@ -125,7 +125,9 @@ function portableEvidence() {
         healthy: false,
         candidateCleared: false,
         rollbackMarkerRecorded: false,
-        brokenSlotAbsent: false
+        candidateSlotRetained: false,
+        readyVerified: false,
+        postExitVerified: false
       }
     }]
   };

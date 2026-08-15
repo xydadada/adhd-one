@@ -93,6 +93,8 @@ jobs:
             }
           }
       - run: npm run build:win
+      - name: Verify real electron-updater feed and SHA-512 consumer path
+        run: npm run e2e:updater-feed
       - name: Verify the exact runtime archive before release metadata
         run: npm run smoke:runtime-archive
       - name: Verify archive through the real Runtime update staging path
@@ -359,7 +361,7 @@ jobs:
           }
           "version=$packageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Download one controlled release artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-assets-${{ github.ref_name }}
           path: dist
@@ -566,7 +568,7 @@ jobs:
           }
       - name: Attest release assets
         id: provenance
-        uses: actions/attest@ce27ba3b4a9a139d9a20a4a07d69fabb52f1e5bc
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           # Attest only primary subjects; checksum and verifier files are manifests/sidecars.
           subject-path: |

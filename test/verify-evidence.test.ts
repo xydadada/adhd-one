@@ -59,7 +59,9 @@ function runtimeRollback(requested: boolean): JsonObject {
     healthy: requested,
     candidateCleared: requested,
     rollbackMarkerRecorded: requested,
-    brokenSlotAbsent: requested
+    candidateSlotRetained: requested,
+    readyVerified: requested,
+    postExitVerified: requested
   };
 }
 
@@ -208,6 +210,21 @@ describe('downloaded Windows E2E evidence verifier', () => {
     const cli = spawnSync(process.execPath, [scriptPath, root], { encoding: 'utf8' });
     expect(cli.status).toBe(1);
     expect(`${cli.stdout}\n${cli.stderr}`).not.toContain('super-secret-token');
+  });
+
+  it('rejects private fields inside rollback evidence without echoing them', async () => {
+    const root = await makeDirectory();
+    const file = path.join(root, 'runtime-rollback-1.json');
+    const value = await readJsonObject(file);
+    const rollback = (value.cycles as JsonObject[])[0].runtimeRollback as JsonObject;
+    rollback.stateFile = 'C:\\Users\\Alice\\private-state.json';
+    rollback.version = '999.0.0-secret';
+    rollback.rawState = { token: 'rollback-secret-token' };
+    await writeJsonObject(file, value);
+    const result = await verifyEvidenceDirectory(root);
+    expect(result.errors).toContain('runtime-rollback-1.json:PACKAGED_EVIDENCE_INVALID');
+    const cli = spawnSync(process.execPath, [scriptPath, root], { encoding: 'utf8' });
+    expect(`${cli.stdout}\n${cli.stderr}`).not.toMatch(/Alice|999\.0\.0-secret|rollback-secret-token/iu);
   });
 
   it('requires strict cycle counts, normal exit booleans, force-kill, and workspace-write evidence', async () => {

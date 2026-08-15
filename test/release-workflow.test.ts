@@ -5,6 +5,13 @@ import { describe, expect, it } from 'vitest';
 const workflowPath = path.resolve('.github', 'workflows', 'release.yml');
 
 describe('release workflow identity gates', () => {
+  it('uses pinned Node 24 artifact download and attestation actions', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    expect(workflow.match(/actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)).toHaveLength(1);
+    expect(workflow.match(/actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6/gu)).toHaveLength(1);
+    expect(workflow).not.toMatch(/d3f86a106a0bac45b974a628896c90dbdf5c8093|ce27ba3b4a9a139d9a20a4a07d69fabb52f1e5bc/u);
+  });
+
   it('gates release metadata on the real Runtime update staging smoke', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     const build = workflow.indexOf('npm run build:win');
@@ -12,6 +19,16 @@ describe('release workflow identity gates', () => {
     const metadata = workflow.indexOf('Generate runtime manifest and checksums');
     expect(updateSmoke).toBeGreaterThan(build);
     expect(metadata).toBeGreaterThan(updateSmoke);
+  });
+
+  it('runs the real electron-updater feed gate before release metadata', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const build = workflow.indexOf('npm run build:win');
+    const feed = workflow.indexOf('npm run e2e:updater-feed');
+    const metadata = workflow.indexOf('Generate runtime manifest and checksums');
+    expect(workflow.match(/npm run e2e:updater-feed/gu)).toHaveLength(1);
+    expect(feed).toBeGreaterThan(build);
+    expect(metadata).toBeGreaterThan(feed);
   });
 
   it('binds release notes to the complete tag or version', async () => {

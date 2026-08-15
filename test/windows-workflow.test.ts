@@ -6,10 +6,23 @@ const workflowPath = path.resolve('.github', 'workflows', 'windows.yml');
 const installedScriptPath = path.resolve('scripts', 'e2e', 'installed.ps1');
 
 describe('Windows verification workflow', () => {
+  it('uses the pinned Node 24 download-artifact action', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    expect(workflow.match(/actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)).toHaveLength(2);
+    expect(workflow).not.toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
+  });
+
   it('runs the real Runtime update staging smoke after the shared build', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     expect(workflow).toContain('npm run smoke:runtime-update');
     expect(workflow.indexOf('npm run smoke:runtime-update')).toBeGreaterThan(workflow.indexOf('npm run build:win'));
+  });
+
+  it('runs the real electron-updater feed gate after the shared build', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    expect(workflow.match(/npm run e2e:updater-feed/gu)).toHaveLength(1);
+    expect(workflow.indexOf('npm run e2e:updater-feed')).toBeGreaterThan(workflow.indexOf('npm run build:win'));
+    expect(workflow.indexOf('npm run smoke:runtime-update')).toBeGreaterThan(workflow.indexOf('npm run e2e:updater-feed'));
   });
 
   it('builds Windows artifacts exactly once', async () => {

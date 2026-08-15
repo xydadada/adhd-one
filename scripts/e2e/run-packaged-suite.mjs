@@ -7,6 +7,11 @@ const SAFE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 export const PACKAGED_SCRIPT_PATH = path.join(SCRIPT_DIRECTORY, 'packaged.mjs');
 const REPOSITORY_ROOT = path.resolve(SCRIPT_DIRECTORY, '..', '..');
+const RUNTIME_ROLLBACK_PROOF_KEYS = Object.freeze([
+  'requested', 'verified', 'candidateSeeded', 'bundledActive',
+  'previousCandidateRecorded', 'healthy', 'candidateCleared',
+  'rollbackMarkerRecorded', 'candidateSlotRetained', 'readyVerified', 'postExitVerified'
+]);
 
 export const PACKAGED_SUITE_STEPS = Object.freeze([
   Object.freeze({
@@ -202,7 +207,12 @@ async function verifyEvidence(readFileImpl, outputPath, step, startedAt) {
         && (cycle.quitAccepted !== true || cycle.gracefulExitVerified !== true)) return false;
       if (step.scenario === 'force-kill' && cycle.forceKillVerified !== true) return false;
       if (step.scenario === 'workspace-write' && cycle.workspaceWriteVerified !== true) return false;
-      if (step.scenario === 'runtime-rollback' && cycle.runtimeRollbackVerified !== true) return false;
+      if (step.scenario === 'runtime-rollback') {
+        const proof = cycle.runtimeRollback;
+        if (cycle.runtimeRollbackVerified !== true || typeof proof !== 'object' || proof === null
+          || Object.keys(proof).length !== RUNTIME_ROLLBACK_PROOF_KEYS.length
+          || !RUNTIME_ROLLBACK_PROOF_KEYS.every(key => proof[key] === true)) return false;
+      }
       return true;
     });
     const normalExitValid = step.scenario === 'force-kill'

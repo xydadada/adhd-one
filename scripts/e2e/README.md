@@ -13,7 +13,7 @@ The script:
 - uses the `launch` scenario by default: requests a normal application shutdown through the CDP browser connection and keeps the existing force-exit fallback;
 - uses the `force-kill` scenario only when requested: hard-kills the launched Electron root PID with `taskkill.exe /PID <pid> /T /F`, never by a global image name;
 - uses `workspace-write` only when requested: starts the official `@deepseek-ai/dsh-llm-mock-server`, injects only fake `DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY` before spawn, loads the packaged `app.asar/out` (or local `out`) `DshRpcClient`, and exercises a real workspace `pwsh` sentinel/tool-result/provider-second-turn/final-nonce flow without an approval UI;
-- uses `runtime-rollback` only for an installed build: seeds an isolated missing slot B as the active candidate, starts the final EXE, and requires both the live Runtime snapshot and persisted state to prove rollback to the bundled Runtime;
+- uses `runtime-rollback` only for an installed build: seeds an isolated, present but version-mismatched slot B as the active candidate, starts the final EXE, and requires both the live Runtime snapshot and post-exit persisted state to prove rollback to the bundled Runtime;
 - records per-cycle startup, ControlWindow, ready, exit, and cleanup results in JSON;
 - reuses the process-tree, CDP-port, and temporary-directory cleanup verification for every scenario.
 
@@ -72,7 +72,7 @@ node scripts/e2e/packaged.mjs `
   --scenario runtime-rollback
 ```
 
-The scenario writes only to its temporary `LOCALAPPDATA`. It verifies bundled activation, the previous B marker, healthy state, candidate clearing, `rolledBackFrom`, and continued absence of the broken slot. Evidence retains only those booleans.
+The scenario writes only to its temporary `LOCALAPPDATA`. It verifies bundled activation, the previous B marker, healthy state, candidate clearing, `rolledBackFrom`, retention of the now-inactive candidate slot, and the same state after clean process exit. Evidence retains only those booleans.
 
 Example ten-cycle run:
 
@@ -83,7 +83,11 @@ node scripts/e2e/packaged.mjs `
   --cycles 10
 ```
 
-Exit code `0` means every cycle reached the ControlWindow and the literal runtime status `Harness：ready`, completed its selected scenario, passed process/CDP cleanup verification, and removed its temporary directory. In `force-kill`, an intentional hard kill is a passing outcome only when the exact process tree is gone. In `workspace-write`, a missing packaged/local RPC client, non-routable mock route, unexpected approval, missing PowerShell call/result, failed sentinel, incomplete history, or mismatched second provider turn is a failure—not a synthetic pass. In `runtime-rollback`, any disagreement between the live snapshot, persisted state, and missing candidate slot is a failure. Exit code `1` means evidence was written but at least one cycle failed. Invalid arguments, a missing executable, a non-Windows host, or a missing Playwright installation use exit code `2`.
+Exit code `0` means every cycle reached the ControlWindow and the literal runtime status `Harness：ready`, completed its selected scenario, passed process/CDP cleanup verification, and removed its temporary directory. In `force-kill`, an intentional hard kill is a passing outcome only when the exact process tree is gone. In `workspace-write`, a missing packaged/local RPC client, non-routable mock route, unexpected approval, missing PowerShell call/result, failed sentinel, incomplete history, or mismatched second provider turn is a failure—not a synthetic pass. In `runtime-rollback`, any disagreement between the live snapshot, persisted state, and the retained version-mismatched candidate slot is a failure. Exit code `1` means evidence was written but at least one cycle failed. Invalid arguments, a missing executable, a non-Windows host, or a missing Playwright installation use exit code `2`.
+
+## Electron updater feed integration
+
+`npm run e2e:updater-feed` launches Electron against a bounded, loopback-only GitHub-compatible feed fixture. It uses electron-updater's real GitHub provider to verify Stable selection, Preview `beta.yml` to `latest.yml` fallback, a successful SHA-512 download, and fail-closed checksum rejection. Ambient proxy and GitHub token variables are removed from the child environment, installation methods are replaced with hard failures, and the harness has a 120-second deadline. This proves the updater consumer path without contacting GitHub or installing an artifact; published-asset attestation and restart/install remain separate release gates.
 
 ## Evidence
 

@@ -49,7 +49,7 @@ const WORKSPACE_KEYS = new Set([
 const RUNTIME_ROLLBACK_KEYS = new Set([
   'requested', 'verified', 'candidateSeeded', 'bundledActive',
   'previousCandidateRecorded', 'healthy', 'candidateCleared',
-  'rollbackMarkerRecorded', 'brokenSlotAbsent'
+  'rollbackMarkerRecorded', 'candidateSlotRetained', 'readyVerified', 'postExitVerified'
 ]);
 
 const SUMMARY_KEYS = new Set([
@@ -178,6 +178,9 @@ const PRODUCTION_ERROR_CODES = new Set([
   'PROCESS_TREE_AUDIT_FAILED',
   'PROCESS_TREE_AUDIT_TIMEOUT',
   'RUNTIME_FAILED',
+  'RUNTIME_ROLLBACK_FAILED',
+  'RUNTIME_ROLLBACK_REQUIRES_INSTALLED',
+  'RUNTIME_ROLLBACK_SLOT_PRESENT',
   'RUNTIME_PID_NOT_IN_APP_PROCESS_TREE',
   'RUNTIME_PROCESS_REMAINED',
   'RUNTIME_READY_TIMEOUT',

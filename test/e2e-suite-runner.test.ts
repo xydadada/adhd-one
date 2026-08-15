@@ -37,6 +37,21 @@ function fakeSpawnFactory(
           const outputPath = argumentValue(args, '--output');
           const scenario = argumentValue(args, '--scenario');
           const cycles = Number(argumentValue(args, '--cycles'));
+          const rollbackProof = scenario === 'runtime-rollback'
+            ? {
+                requested: true,
+                verified: true,
+                candidateSeeded: true,
+                bundledActive: true,
+                previousCandidateRecorded: true,
+                healthy: true,
+                candidateCleared: true,
+                rollbackMarkerRecorded: true,
+                candidateSlotRetained: true,
+                readyVerified: true,
+                postExitVerified: true
+              }
+            : undefined;
           const evidence = {
             schemaVersion: 1,
             tool: 'adhd-one-packaged-e2e',
@@ -77,7 +92,8 @@ function fakeSpawnFactory(
               remainingPids: [],
               forceKillVerified: scenario === 'force-kill',
               workspaceWriteVerified: scenario === 'workspace-write',
-              runtimeRollbackVerified: scenario === 'runtime-rollback'
+              runtimeRollbackVerified: scenario === 'runtime-rollback',
+              ...(rollbackProof ? { runtimeRollback: rollbackProof } : {})
             }))
           };
           mutateEvidence?.(
@@ -278,6 +294,24 @@ describe('packaged suite runner', () => {
       spawnImpl: fakeSpawnFactory(calls, -1, mutate)
     })).rejects.toMatchObject({ code: 'PACKAGED_SUITE_EVIDENCE_INVALID' });
     expect(calls).toHaveLength(1);
+  });
+
+  it('rejects a rollback step when its top-level or cycle proof is false', async () => {
+    const evidenceDir = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-suite-rollback-contract-test-'));
+    temporaryRoots.push(evidenceDir);
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const mutate: EvidenceMutator = (evidence, cycles) => {
+      if (evidence.scenario !== 'runtime-rollback') return;
+      evidence.runtimeRollbackVerified = false;
+      cycles.forEach(cycle => { cycle.runtimeRollbackVerified = false; });
+    };
+
+    await expect(runPackagedSuite({
+      exe: path.join(evidenceDir, 'ADHD One.exe'),
+      evidenceDir,
+      spawnImpl: fakeSpawnFactory(calls, -1, mutate)
+    })).rejects.toMatchObject({ code: 'PACKAGED_SUITE_EVIDENCE_INVALID' });
+    expect(calls).toHaveLength(4);
   });
 
   it('exempts force-kill from graceful quit evidence requirements', async () => {

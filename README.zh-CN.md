@@ -49,8 +49,8 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 - Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
 - Packaged E2E：Windows Server 2025 hardened 套件已通过安装版 13/13 循环，以及 unpacked 和最终 Portable ZIP 检查。所有已验证退出均清空 Runtime 与应用进程树；workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。
-- 下一项 CI 门禁：安装版套件已增加第 14 个隔离循环，预置缺失的 Runtime 候选槽，并要求最终 EXE 将回滚到 bundled 的结果持久化；对应 Windows run 全绿前不计为已通过。
-- 当前证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），JavaScript 语法、CodeQL、npm audit/signatures 和许可证策略也通过。已发布的 Setup 资产为 151,012,608 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
+- 下一项 CI 门禁：安装版套件已增加第 14 个隔离循环，预置一个存在但版本不匹配的 Runtime 候选槽，并要求最终 EXE 将回滚到 bundled 的结果持久化；对应 Windows run 全绿前不计为已通过。
+- 当前本地证据：`npm run check` 通过 28 个 test files（313 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），真实 electron-updater loopback feed 也通过 Stable、Preview fallback、SHA-512 成功和摘要拒绝路径；在本批次推送并通过前，远程证据仍以以上 CI run 为准。已发布的 Setup 资产为 151,012,608 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
 
 ## 本地开发
 

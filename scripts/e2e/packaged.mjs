@@ -19,6 +19,8 @@ const WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
 const PROCESS_PATH_AUDIT_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 const TEMP_ROOT_PREFIX = 'adhd-one-packaged-e2e-';
+const RUNTIME_ROLLBACK_STATE_VERSION = '999.0.0-e2e-broken';
+const RUNTIME_ROLLBACK_PACKAGE_VERSION = '998.0.0-e2e-mismatch';
 
 const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write', 'runtime-rollback']);
 const EVIDENCE_CLEANUP_STATES = new Set(['pending', 'removed', 'failed', 'not-created']);
@@ -135,7 +137,9 @@ function sanitizeRuntimeRollbackEvidence(value, scenario) {
     healthy: requested && rollback.healthy === true,
     candidateCleared: requested && rollback.candidateCleared === true,
     rollbackMarkerRecorded: requested && rollback.rollbackMarkerRecorded === true,
-    brokenSlotAbsent: requested && rollback.brokenSlotAbsent === true
+    candidateSlotRetained: requested && rollback.candidateSlotRetained === true,
+    readyVerified: requested && rollback.readyVerified === true,
+    postExitVerified: requested && rollback.postExitVerified === true
   };
 }
 
@@ -1074,34 +1078,43 @@ async function prepareWorkspaceWriteDshHome(prepared, launchExecutable, portable
 async function prepareRuntimeRollback(prepared, portableMode) {
   if (portableMode) throw new Error('RUNTIME_ROLLBACK_REQUIRES_INSTALLED');
   const runtimes = path.join(prepared.localAppData, 'ADHD One', 'runtimes');
-  const brokenSlot = path.join(runtimes, 'slot-B');
-  if (!await pathIsAbsent(brokenSlot)) throw new Error('RUNTIME_ROLLBACK_SLOT_PRESENT');
-  await mkdir(runtimes, { recursive: true });
+  const candidateSlot = path.join(runtimes, 'slot-B');
+  const packageDirectory = path.join(candidateSlot, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh');
+  if (!await pathIsAbsent(candidateSlot)) throw new Error('RUNTIME_ROLLBACK_SLOT_PRESENT');
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(path.join(packageDirectory, 'package.json'), `${JSON.stringify({ name: '@deepseek-ai/dsh', version: RUNTIME_ROLLBACK_PACKAGE_VERSION })}\n`, { encoding: 'utf8', flag: 'wx' });
   await writeFile(path.join(runtimes, 'runtime-state.json'), `${JSON.stringify({
     schemaVersion: 1,
     active: 'B',
     previous: 'bundled',
-    version: '999.0.0-e2e-broken',
+    version: RUNTIME_ROLLBACK_STATE_VERSION,
     healthy: false,
     candidate: true
   })}\n`, { encoding: 'utf8', flag: 'wx' });
-  return { runtimes, brokenSlot };
+  return { runtimes, candidateSlot };
 }
 
-export async function verifyRuntimeRollbackState(runtimes, brokenSlot, runtimeSnapshot) {
+export async function verifyRuntimeRollbackState(runtimes, candidateSlot, runtimeSnapshot) {
   let state;
   try { state = JSON.parse(await readFile(path.join(runtimes, 'runtime-state.json'), 'utf8')); }
   catch { return { verified: false }; }
   if (!isRecord(state)) return { verified: false };
+  let candidatePackage;
+  try {
+    candidatePackage = JSON.parse(await readFile(path.join(candidateSlot, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'));
+  } catch { candidatePackage = undefined; }
   const evidence = {
     verified: false,
-    candidateSeeded: true,
+    candidateSeeded: isRecord(candidatePackage)
+      && candidatePackage.name === '@deepseek-ai/dsh'
+      && candidatePackage.version === RUNTIME_ROLLBACK_PACKAGE_VERSION
+      && candidatePackage.version !== RUNTIME_ROLLBACK_STATE_VERSION,
     bundledActive: state.active === 'bundled' && runtimeSnapshot?.slot === 'bundled',
     previousCandidateRecorded: state.previous === 'B',
     healthy: state.healthy === true,
     candidateCleared: state.candidate === false,
     rollbackMarkerRecorded: state.rolledBackFrom === 'B',
-    brokenSlotAbsent: await pathIsAbsent(brokenSlot)
+    candidateSlotRetained: await lstat(candidateSlot).then(value => value.isDirectory() && !value.isSymbolicLink()).catch(() => false)
   };
   evidence.verified = Object.entries(evidence).every(([key, value]) => key === 'verified' || value === true);
   return evidence;
@@ -1354,7 +1367,9 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
       healthy: false,
       candidateCleared: false,
       rollbackMarkerRecorded: false,
-      brokenSlotAbsent: false
+      candidateSlotRetained: false,
+      readyVerified: false,
+      postExitVerified: false
     }
   };
   let prepared;
@@ -1459,10 +1474,9 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     await requestHostDescribe(ready.snapshot.runtime.url, cycle);
     record.hostDescribeVerified = true;
     if (scenario === 'runtime-rollback') {
-      const rollbackEvidence = await verifyRuntimeRollbackState(rollbackPlan.runtimes, rollbackPlan.brokenSlot, ready.snapshot.runtime);
-      record.runtimeRollback = { requested: true, ...rollbackEvidence };
-      record.runtimeRollbackVerified = rollbackEvidence.verified === true;
-      if (!record.runtimeRollbackVerified) throw new Error('RUNTIME_ROLLBACK_FAILED');
+      const rollbackEvidence = await verifyRuntimeRollbackState(rollbackPlan.runtimes, rollbackPlan.candidateSlot, ready.snapshot.runtime);
+      record.runtimeRollback = { requested: true, ...rollbackEvidence, readyVerified: rollbackEvidence.verified, postExitVerified: false, verified: false };
+      if (!rollbackEvidence.verified) throw new Error('RUNTIME_ROLLBACK_FAILED');
     }
     if (scenario === 'workspace-write') {
       const workspaceOutcome = await runWorkspaceWrite(launchExecutable, prepared, ready.snapshot, cycle, mock, fakeApiKey, workspacePlan);
@@ -1528,6 +1542,19 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
         record.errorCode ??= stableStageErrorCode(error, 'MOCK_CLOSE_FAILED', 'MOCK_CLOSE_TIMEOUT');
         record.passed = false;
       }
+    }
+    if (scenario === 'runtime-rollback' && rollbackPlan) {
+      const postExit = await verifyRuntimeRollbackState(rollbackPlan.runtimes, rollbackPlan.candidateSlot, { slot: 'bundled' });
+      const readyVerified = record.runtimeRollback.readyVerified === true;
+      record.runtimeRollback = {
+        requested: true,
+        ...postExit,
+        readyVerified,
+        postExitVerified: postExit.verified === true,
+        verified: readyVerified && postExit.verified === true
+      };
+      record.runtimeRollbackVerified = record.runtimeRollback.verified;
+      if (!record.runtimeRollbackVerified) record.errorCode ??= 'RUNTIME_ROLLBACK_FAILED';
     }
     if (prepared) {
       await cleanupPreparedRoot(prepared, record);

@@ -249,7 +249,10 @@ describe('packaged E2E evidence safety', () => {
           healthy: true,
           candidateCleared: true,
           rollbackMarkerRecorded: true,
-          brokenSlotAbsent: true,
+          candidateSlotRetained: true,
+          readyVerified: true,
+          postExitVerified: true,
+          version: '999.0.0-e2e-broken',
           stateFile: 'C:\\Users\\Alice\\AppData\\runtime-state.json',
           rawState: { token: 'secret-must-not-escape' }
         }
@@ -267,17 +270,24 @@ describe('packaged E2E evidence safety', () => {
       healthy: true,
       candidateCleared: true,
       rollbackMarkerRecorded: true,
-      brokenSlotAbsent: true
+      candidateSlotRetained: true,
+      readyVerified: true,
+      postExitVerified: true
     });
-    expect(JSON.stringify(value)).not.toMatch(/Alice|AppData|stateFile|rawState|secret-must-not-escape/iu);
+    expect(JSON.stringify(value)).not.toMatch(/Alice|AppData|stateFile|rawState|secret-must-not-escape|999\.0\.0/iu);
   });
 
   it('verifies persisted bundled rollback without exposing the state body', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-rollback-evidence-'));
     try {
       const runtimes = path.join(root, 'runtimes');
-      const brokenSlot = path.join(runtimes, 'slot-B');
-      await mkdir(runtimes);
+      const candidateSlot = path.join(runtimes, 'slot-B');
+      const packageDirectory = path.join(candidateSlot, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh');
+      await mkdir(packageDirectory, { recursive: true });
+      await writeFile(path.join(packageDirectory, 'package.json'), JSON.stringify({
+        name: '@deepseek-ai/dsh',
+        version: '998.0.0-e2e-mismatch'
+      }));
       await writeFile(path.join(runtimes, 'runtime-state.json'), JSON.stringify({
         schemaVersion: 1,
         active: 'bundled',
@@ -287,7 +297,7 @@ describe('packaged E2E evidence safety', () => {
         candidate: false,
         rolledBackFrom: 'B'
       }));
-      await expect(verifyRuntimeRollbackState(runtimes, brokenSlot, { slot: 'bundled' })).resolves.toEqual({
+      await expect(verifyRuntimeRollbackState(runtimes, candidateSlot, { slot: 'bundled' })).resolves.toEqual({
         verified: true,
         candidateSeeded: true,
         bundledActive: true,
@@ -295,9 +305,14 @@ describe('packaged E2E evidence safety', () => {
         healthy: true,
         candidateCleared: true,
         rollbackMarkerRecorded: true,
-        brokenSlotAbsent: true
+        candidateSlotRetained: true
       });
       await expect(readFile(path.join(runtimes, 'runtime-state.json'), 'utf8')).resolves.toContain('rolledBackFrom');
+      await writeFile(path.join(packageDirectory, 'package.json'), '{}');
+      await expect(verifyRuntimeRollbackState(runtimes, candidateSlot, { slot: 'bundled' })).resolves.toMatchObject({
+        verified: false,
+        candidateSeeded: false
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

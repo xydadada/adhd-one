@@ -852,9 +852,10 @@ export function shouldCopyPortableEntry(sourceRoot, source) {
   return candidate !== portableData && !candidate.startsWith(`${portableData}${path.sep}`);
 }
 
-async function windowsProcesses() {
+async function windowsProcesses(timeoutMs = WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS) {
+  const boundedTimeoutMs = Math.min(WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS, Math.max(1, Math.trunc(timeoutMs)));
   const script = "$selfPid = $PID; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | Where-Object { $_.ProcessId -ne $selfPid -and $_.ParentProcessId -ne $selfPid } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate,CommandLine | ConvertTo-Json -Compress";
-  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: boundedTimeoutMs, maxBuffer: 8 * 1024 * 1024 });
   const value = JSON.parse(stdout);
   return (Array.isArray(value) ? value : [value]).map(item => ({
     pid: Number(item.ProcessId),
@@ -920,7 +921,8 @@ export async function waitForProcessTree(readProcesses, rootPid, runtimePid, tim
   let lastError;
   do {
     try {
-      lastTree = processTree(await readProcesses(), rootPid);
+      const remainingBudget = Math.max(1, deadline - Date.now());
+      lastTree = processTree(await withTimeout(Promise.resolve(readProcesses(remainingBudget)), remainingBudget, 'PROCESS_TREE_DISCOVERY'), rootPid);
       lastError = undefined;
       if (hasObservedProcessTree(lastTree, rootPid, runtimePid)) return lastTree;
     } catch (error) {
@@ -1021,7 +1023,11 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
   let lastMatches = [];
   try {
     while (true) {
-      const processes = await windowsProcesses();
+      const remainingBudget = deadline - Date.now();
+      if (remainingBudget <= 0) {
+        return { verified: lastMatches.length === 0, pids: lastMatches.map(match => match.item.pid), kinds: [...new Set(lastMatches.map(match => match.kind))].sort() };
+      }
+      const processes = await windowsProcesses(remainingBudget);
       const currentByPid = new Map(processes.filter(item => safePid(item?.pid)).map(item => [item.pid, item]));
       lastMatches = processes.flatMap(item => {
         if (!safePid(item?.pid) || item.pid === process.pid) return [];
@@ -1047,12 +1053,37 @@ async function auditScopedProcesses({ startedAt, rootPid, knownProcesses, execut
 async function waitForProcessesGone(expected) {
   const deadline = Date.now() + FORCE_EXIT_TIMEOUT_MS;
   do {
-    const current = new Map((await windowsProcesses()).map(item => [item.pid, item]));
+    const remainingBudget = deadline - Date.now();
+    if (remainingBudget <= 0) return expected;
+    const current = new Map((await windowsProcesses(remainingBudget)).map(item => [item.pid, item]));
     const remaining = expected.filter(item => current.get(item.pid)?.created === item.created);
     if (!remaining.length) return [];
     if (Date.now() >= deadline) return remaining;
     await delay(200);
   } while (true);
+}
+
+async function forceKillProcessTree(pid) {
+  const target = safePid(pid);
+  if (!target) return false;
+  try {
+    await execFileAsync('taskkill.exe', ['/PID', String(target), '/T', '/F'], {
+      windowsHide: true,
+      timeout: FORCE_EXIT_TIMEOUT_MS,
+      maxBuffer: 1 * 1024 * 1024
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureProcessesGone(expected) {
+  let remaining = await waitForProcessesGone(expected);
+  if (!remaining.length) return { remaining, forcedCleanup: false };
+  await Promise.allSettled([...new Set(remaining.map(item => item.pid))].map(pid => forceKillProcessTree(pid)));
+  remaining = await waitForProcessesGone(remaining);
+  return { remaining, forcedCleanup: true };
 }
 
 export async function cdpClosed(port) {
@@ -1075,17 +1106,7 @@ export async function cdpClosed(port) {
 async function forceKillApplication(child, exitPromise) {
   const pid = safePid(child?.pid);
   if (!pid) return { forcedTermination: false, forceKillVerified: false, quitAccepted: false, gracefulExitVerified: false };
-  let taskkillIssued = false;
-  try {
-    await execFileAsync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-      windowsHide: true,
-      timeout: FORCE_EXIT_TIMEOUT_MS,
-      maxBuffer: 1 * 1024 * 1024
-    });
-    taskkillIssued = true;
-  } catch {
-    // A later process-tree check is the source of truth for cleanup.
-  }
+  const taskkillIssued = await forceKillProcessTree(pid);
   const exited = await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
   return {
     forcedTermination: taskkillIssued,
@@ -1109,8 +1130,7 @@ async function terminateApplication(child, exitPromise, browser, control, scenar
   if (gracefulExitVerified) {
     return { forcedTermination: false, forceKillVerified: false, quitAccepted, gracefulExitVerified };
   }
-  let forceKilled = false;
-  try { forceKilled = child.kill('SIGKILL'); } catch { forceKilled = false; }
+  const forceKilled = await forceKillProcessTree(child.pid);
   await exitedWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
   return { forcedTermination: forceKilled, forceKillVerified: false, quitAccepted, gracefulExitVerified: false };
 }
@@ -1142,8 +1162,7 @@ async function terminateQualificationApplication(child, exitPromise, control) {
     };
   }
 
-  let forcedTermination = false;
-  try { forcedTermination = child.kill('SIGKILL'); } catch { forcedTermination = false; }
+  const forcedTermination = await forceKillProcessTree(child.pid);
   const forcedExit = await exitInfoWithin(exitPromise, FORCE_EXIT_TIMEOUT_MS);
   return {
     quitAccepted,
@@ -1671,8 +1690,9 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     record.mergedProcessTreeCount = mergedTree.length;
     if (mergedTree.length) {
       try {
-        const remaining = await waitForProcessesGone(mergedTree);
-        record.processTreeExited = remaining.length === 0;
+        const cleanup = await ensureProcessesGone(mergedTree);
+        record.forcedTermination ||= cleanup.forcedCleanup;
+        record.processTreeExited = cleanup.remaining.length === 0;
       } catch (error) {
         record.errorCode ??= stableStageErrorCode(error, 'PROCESS_TREE_AUDIT_FAILED', 'PROCESS_TREE_AUDIT_TIMEOUT');
       }
@@ -1969,10 +1989,11 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     }
     if (launchedTree.length) {
       try {
-        const remaining = await waitForProcessesGone(launchedTree);
-        record.remainingPids = remaining.map(item => item.pid);
-        record.runtimePidExited = !remaining.some(item => item.pid === record.runtimePid);
-        record.processTreeExited = remaining.length === 0;
+        const cleanup = await ensureProcessesGone(launchedTree);
+        record.forcedTermination ||= cleanup.forcedCleanup;
+        record.remainingPids = cleanup.remaining.map(item => item.pid);
+        record.runtimePidExited = !cleanup.remaining.some(item => item.pid === record.runtimePid);
+        record.processTreeExited = cleanup.remaining.length === 0;
       } catch (error) {
         record.errorCode ??= stableStageErrorCode(error, 'PROCESS_TREE_AUDIT_FAILED', 'PROCESS_TREE_AUDIT_TIMEOUT');
         record.passed = false;

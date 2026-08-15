@@ -162,6 +162,7 @@ export class RuntimeController extends EventEmitter {
   private candidateSlot: CandidateSlot | undefined;
   private candidateGeneration: number | undefined;
   private intentId = 0;
+  private intentAbort = new AbortController();
 
   constructor(
     private readonly settings: SettingsStore,
@@ -177,7 +178,7 @@ export class RuntimeController extends EventEmitter {
   snapshot(): RuntimeSnapshotV2 { return structuredClone(this.snapshotValue); }
 
   start(): Promise<RuntimeSnapshotV2> {
-    const intent = ++this.intentId;
+    const { intent, signal } = this.beginIntent();
     this.stopRequested = false;
     return this.queue.run(async () => {
       if (intent !== this.intentId) return this.snapshot();
@@ -185,18 +186,18 @@ export class RuntimeController extends EventEmitter {
       if (['preparing', 'starting', 'stopping', 'updating'].includes(this.snapshotValue.state)) {
         throw new Error(`RUNTIME_BUSY:${this.snapshotValue.state}`);
       }
-      return this.startAttempt(false, intent);
+      return this.startAttempt(false, intent, signal);
     });
   }
 
   restart(): Promise<RuntimeSnapshotV2> {
-    const intent = ++this.intentId;
+    const { intent, signal } = this.beginIntent();
     this.stopRequested = false;
-    return this.queue.run(async () => { if (intent !== this.intentId) return this.snapshot(); await this.stopInternal(); return this.startAttempt(false, intent); });
+    return this.queue.run(async () => { if (intent !== this.intentId) return this.snapshot(); await this.stopInternal(); return this.startAttempt(false, intent, signal); });
   }
 
   stop(): Promise<RuntimeSnapshotV2> {
-    ++this.intentId;
+    this.beginIntent();
     this.stopRequested = true;
     this.cancelRestart();
     if (this.snapshotValue.state === 'preparing' || this.snapshotValue.state === 'starting') {
@@ -207,7 +208,7 @@ export class RuntimeController extends EventEmitter {
 
   /** Last-resort bounded shutdown used only when the coordinated quit deadline expires. */
   forceShutdown(): void {
-    ++this.intentId;
+    this.beginIntent();
     this.stopRequested = true;
     this.stopping = true;
     this.cancelRestart();
@@ -218,21 +219,21 @@ export class RuntimeController extends EventEmitter {
     this.clearHandles(child);
   }
 
-  setUpdating(updating: boolean): void {
-    ++this.intentId;
+  setUpdating(updating: boolean): Promise<RuntimeSnapshotV2> {
+    this.beginIntent();
     this.cancelRestart();
     if (this.stableTimer) clearTimeout(this.stableTimer);
     this.stableTimer = undefined;
     this.stopRequested = updating;
-    if (updating) {
-      this.setSnapshot({ state: 'updating', pid: undefined, url: undefined, error: undefined });
-      return;
-    }
-    this.stopRequested = false;
-    this.setSnapshot({ state: 'idle', pid: undefined, url: undefined, error: undefined });
+    return this.queue.run(async () => {
+      if (this.process) await this.stopInternal();
+      this.stopRequested = updating;
+      this.setSnapshot({ state: updating ? 'updating' : 'idle', pid: undefined, url: undefined, error: undefined });
+      return this.snapshot();
+    });
   }
 
-  private async startAttempt(portFallback: boolean, intent: number): Promise<RuntimeSnapshotV2> {
+  private async startAttempt(portFallback: boolean, intent: number, signal: AbortSignal): Promise<RuntimeSnapshotV2> {
     this.cancelRestart();
     this.refreshCrashWindow();
     if (this.cancelled(intent)) return this.cancelledSnapshot();
@@ -286,7 +287,7 @@ export class RuntimeController extends EventEmitter {
       if (this.cancelled(intent)) return this.cancelledSnapshot();
       if (candidateRun && selection.slot !== 'bundled' && await this.rollbackCandidate(selection.slot, true)) {
         this.clearCandidateProbation(selection.slot);
-        return this.startAttempt(false, intent);
+        return this.startAttempt(false, intent, signal);
       }
       const code = error instanceof RuntimeClosurePreflightError
         ? error.code
@@ -331,21 +332,31 @@ export class RuntimeController extends EventEmitter {
     const timeout = new Promise<{ kind: 'timeout' }>(resolve => {
       startupTimer = setTimeout(() => resolve({ kind: 'timeout' }), 45_000);
     });
-    let outcome: Awaited<typeof ready> | Awaited<typeof exited> | { kind: 'timeout' };
+    let cancelStartup: (() => void) | undefined;
+    const cancelled = new Promise<{ kind: 'cancelled' }>(resolve => {
+      const finish = (): void => resolve({ kind: 'cancelled' });
+      if (signal.aborted) finish();
+      else {
+        signal.addEventListener('abort', finish, { once: true });
+        cancelStartup = () => signal.removeEventListener('abort', finish);
+      }
+    });
+    let outcome: Awaited<typeof ready> | Awaited<typeof exited> | { kind: 'timeout' } | { kind: 'cancelled' };
     try {
-      outcome = await Promise.race([ready, exited, timeout]);
+      outcome = await Promise.race([ready, exited, timeout, cancelled]);
     } finally {
       if (startupTimer) clearTimeout(startupTimer);
+      cancelStartup?.();
     }
     if (outcome.kind !== 'ready') {
       await this.terminateAndRelease(child);
       if (this.cancelled(intent)) return this.cancelledSnapshot();
       const portInUse = outcome.kind === 'fatal' && outcome.error instanceof Error
         && outcome.error.message.startsWith('PORT_IN_USE:');
-      if (!portFallback && portInUse) return this.startAttempt(true, intent);
+      if (!portFallback && portInUse) return this.startAttempt(true, intent, signal);
       if (candidateRun && selection.slot !== 'bundled' && await this.rollbackCandidate(selection.slot, true)) {
         this.clearCandidateProbation(selection.slot);
-        return this.startAttempt(false, intent);
+        return this.startAttempt(false, intent, signal);
       }
       const message = outcome.kind === 'exit' ? `Harness exited with code ${outcome.code}.`
         : outcome.kind === 'wait-failed' ? redactText(String(outcome.error instanceof Error ? outcome.error.message : outcome.error))
@@ -371,7 +382,7 @@ export class RuntimeController extends EventEmitter {
       if (this.cancelled(intent)) return this.cancelledSnapshot();
       if (candidateRun && selection.slot !== 'bundled' && await this.rollbackCandidate(selection.slot, true)) {
         this.clearCandidateProbation(selection.slot);
-        return this.startAttempt(false, intent);
+        return this.startAttempt(false, intent, signal);
       }
       this.setSnapshot({ state: 'failed', pid: undefined, error: { code: 'RUNTIME_READINESS_FAILED', message: redactText(String(error instanceof Error ? error.message : error)) } });
       return this.snapshot();
@@ -591,6 +602,7 @@ export class RuntimeController extends EventEmitter {
     this.crashTimes.push(Date.now());
     this.setSnapshot({ restartAttempt: this.crashTimes.length });
     const restartIntent = this.intentId;
+    const restartSignal = this.intentAbort.signal;
     this.armCrashWindowTimer();
     if (this.candidateSlot === this.snapshotValue.slot && this.candidateGeneration === generation
       && this.crashTimes.length >= 3) {
@@ -599,7 +611,7 @@ export class RuntimeController extends EventEmitter {
         if (this.stopRequested || restartIntent !== this.intentId) return this.snapshot();
         if (await this.rollbackCandidate(slot, true)) {
           this.clearCandidateProbation(slot);
-          return this.startAttempt(false, restartIntent);
+          return this.startAttempt(false, restartIntent, restartSignal);
         }
         return this.snapshot();
       }).catch(() => undefined);
@@ -608,7 +620,7 @@ export class RuntimeController extends EventEmitter {
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
       if (this.stopRequested || generation !== this.snapshotValue.generation || restartIntent !== this.intentId) return;
-      void this.queue.run(() => restartIntent === this.intentId && !this.stopRequested ? this.startAttempt(false, restartIntent) : Promise.resolve(this.snapshot())).catch(() => undefined);
+      void this.queue.run(() => restartIntent === this.intentId && !this.stopRequested ? this.startAttempt(false, restartIntent, restartSignal) : Promise.resolve(this.snapshot())).catch(() => undefined);
     }, delay);
     this.restartTimer.unref();
   }
@@ -648,26 +660,39 @@ export class RuntimeController extends EventEmitter {
   }
 
   private armStableTimer(generation: number): void {
+    const intent = this.intentId;
     this.stableTimer = setTimeout(() => {
-      if (generation === this.snapshotValue.generation && this.snapshotValue.state === 'ready') {
-        this.crashTimes = [];
-        if (this.crashWindowTimer) clearTimeout(this.crashWindowTimer);
-        this.crashWindowTimer = undefined;
+      void this.queue.run(async () => {
+        if (intent !== this.intentId || this.stopRequested
+          || generation !== this.snapshotValue.generation || this.snapshotValue.state !== 'ready') return;
         if (this.candidateGeneration === generation && this.candidateSlot) {
           const slot = this.candidateSlot;
           const version = this.snapshotValue.runtimeVersion;
-          void this.markRuntimeStable(slot, version)
-            .then(() => this.emit('stable', this.snapshot()))
-            .catch(() => undefined);
+          await this.markRuntimeStable(slot, version);
+          if (intent !== this.intentId || this.stopRequested
+            || generation !== this.snapshotValue.generation || this.snapshotValue.state !== 'ready'
+            || this.candidateGeneration !== generation || this.candidateSlot !== slot
+            || this.snapshotValue.runtimeVersion !== version) return;
           this.clearCandidateProbation(slot);
+          this.emit('stable', this.snapshot());
         }
+        this.crashTimes = [];
+        if (this.crashWindowTimer) clearTimeout(this.crashWindowTimer);
+        this.crashWindowTimer = undefined;
         this.setSnapshot({ restartAttempt: 0 });
-      }
+      }).catch(() => undefined);
     }, 600_000);
     this.stableTimer.unref();
   }
 
   private cancelled(intent: number): boolean { return this.stopRequested || intent !== this.intentId; }
+
+  private beginIntent(): { intent: number; signal: AbortSignal } {
+    this.intentAbort.abort();
+    this.intentAbort = new AbortController();
+    this.intentId += 1;
+    return { intent: this.intentId, signal: this.intentAbort.signal };
+  }
 
   private armCrashWindowTimer(): void {
     if (this.crashWindowTimer) clearTimeout(this.crashWindowTimer);

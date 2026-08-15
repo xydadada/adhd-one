@@ -22,6 +22,7 @@ class FakeProcess implements ManagedProcess {
   write(_value: string): void {}
   readAvailable(): Buffer { return Buffer.alloc(0); }
   terminate(_exitCode?: number): void {}
+  waitForTreeExit(_timeoutMs: number): Promise<boolean> { return Promise.resolve(true); }
   close(): void {}
 }
 
@@ -75,7 +76,7 @@ describe('RuntimeSnapshotV2', () => {
     expect(controller.snapshot().health).toBe('unknown');
   });
 
-  it('counts only scheduled automatic restarts inside the ten-minute crash window', () => {
+  it('counts only scheduled automatic restarts inside the ten-minute crash window', async () => {
     vi.useFakeTimers({ now: 0 });
     const controller = createController('C:\\workspace');
     const privateController = internals(controller);
@@ -97,14 +98,14 @@ describe('RuntimeSnapshotV2', () => {
     vi.clearAllTimers();
     privateController.setSnapshot({ state: 'ready', generation: 2 });
     privateController.armStableTimer(2);
-    vi.advanceTimersByTime(599_999);
+    await vi.advanceTimersByTimeAsync(599_999);
     expect(controller.snapshot().restartAttempt).toBe(3);
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(controller.snapshot()).toMatchObject({ state: 'ready', health: 'healthy', restartAttempt: 0 });
     expect(privateController.crashTimes).toEqual([]);
   });
 
-  it('expires restartAttempt after ten minutes even while updating instead of ready', () => {
+  it('expires restartAttempt after ten minutes even while updating instead of ready', async () => {
     vi.useFakeTimers({ now: 0 });
     const controller = createController('C:\\workspace');
     const privateController = internals(controller);
@@ -114,7 +115,7 @@ describe('RuntimeSnapshotV2', () => {
     privateController.handleUnexpectedExit(child, 1, 1);
     expect(controller.snapshot().restartAttempt).toBe(1);
 
-    controller.setUpdating(true);
+    await controller.setUpdating(true);
     vi.advanceTimersByTime(600_000);
 
     expect(controller.snapshot()).toMatchObject({ state: 'updating', restartAttempt: 0 });
@@ -136,7 +137,7 @@ describe('RuntimeSnapshotV2', () => {
     privateController.handleUnexpectedExit(child, 7, 1);
     await vi.waitFor(() => expect(privateController.rollbackCandidate).toHaveBeenCalledWith('A', true));
 
-    expect(privateController.startAttempt).toHaveBeenCalledWith(false, expect.any(Number));
+    expect(privateController.startAttempt).toHaveBeenCalledWith(false, expect.any(Number), expect.any(AbortSignal));
     expect(controller.snapshot().restartAttempt).toBe(3);
   });
 
@@ -155,6 +156,43 @@ describe('RuntimeSnapshotV2', () => {
     expect(privateController.markRuntimeStable).toHaveBeenCalledWith('B', '0.2.0');
     expect(privateController.candidateSlot).toBeUndefined();
     expect(privateController.candidateGeneration).toBeUndefined();
+  });
+
+  it('does not emit stable when a newer intent arrives during persistence', async () => {
+    vi.useFakeTimers({ now: 100 });
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    privateController.candidateSlot = 'B';
+    privateController.candidateGeneration = 9;
+    let finish!: () => void;
+    privateController.markRuntimeStable = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    privateController.setSnapshot({ state: 'ready', generation: 9, slot: 'B', runtimeVersion: '0.2.0' });
+    const stable = vi.fn();
+    controller.on('stable', stable);
+
+    privateController.armStableTimer(9);
+    await vi.advanceTimersByTimeAsync(600_000);
+    const stop = controller.stop();
+    finish();
+    await stop;
+
+    expect(stable).not.toHaveBeenCalled();
+    expect(privateController.candidateSlot).toBe('B');
+    expect(privateController.candidateGeneration).toBe(9);
+  });
+
+  it('stops and releases a live process before entering updating', async () => {
+    const controller = createController('C:\\workspace');
+    const privateController = internals(controller);
+    const child = new FakeProcess(901);
+    privateController.process = child;
+    privateController.setSnapshot({ state: 'ready', generation: 4, pid: child.pid, url: 'http://127.0.0.1:43123' });
+
+    await expect(controller.setUpdating(true)).resolves.toMatchObject({ state: 'updating' });
+
+    expect(privateController.process).toBeUndefined();
+    expect(controller.snapshot()).not.toHaveProperty('pid');
+    expect(controller.snapshot()).not.toHaveProperty('url');
   });
 
   it('does not increment restartAttempt for manual start, stop, or restart', async () => {

@@ -384,12 +384,16 @@ npm run e2e:packaged -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evi
 
 GitHub Windows Server 2025 每次自动执行阶段 D；RC/Stable 在本地干净 Windows 11 x64 VM 执行同一套脚本。VM 不安装系统 Node/npm/pnpm；覆盖中文用户名、空格路径、长路径、空 PATH、只读 workspace、崩溃、离线、配置损坏、更新中断和 A/B 坏槽。不得把 Server 结果描述成 Windows 11 结果。
 
-后续阶段待新增（当前不可执行）：
+当前可执行：
 
 | npm 命令 | 用途 |
 |---|---|
-| `npm run e2e:win11 -- --suite rc --output .\evidence` | 干净 Windows 11 x64 套件 |
-| `npm run verify:win11-evidence -- .\evidence\win11-evidence.json` | 离线校验严格、无路径的 Windows 11 x64/build、EXE SHA-256、性能和零残留进程证据；采集器尚待实现 |
+| `npm run prepare:win11-runner -- --output "C:\adhd-one-win11-runner" --node "C:\path\to\node.exe"` | 从固定脚本清单和 lockfile 闭包生成自包含 runner |
+| `npm run e2e:qualification -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evidence\qualification.json"` | 单实例验证首次交互、热重启、五秒退出和零残留 |
+| `npm run e2e:win11 -- -SetupPath "C:\path\ADHD-One-Setup-0.2.0-beta.2-x64.exe" -EvidenceRoot "C:\adhd-one-win11-runner\evidence" -RepoRoot "C:\adhd-one-win11-runner"` | 干净 Win11 四行路径矩阵；每行安装/卸载并跑一次 qualification，不重复完整 14-cycle 套件 |
+| `npm run verify:win11-evidence -- .\evidence\win11-evidence.json` | 离线校验严格、无路径的 Windows 11 x64/build、EXE SHA-256、性能和零残留进程证据 |
+
+仍未闭环：把 host proof、真实发布 EXE digest、一次完整安装套件、路径矩阵、可信的一分钟整棵应用进程 CPU 计量和零残留结果汇总为同一次不可伪造的采集，并绑定本地签名/attestation。现有 builder/verifier 只能作为本地候选证据，不能单独作为 Stable 证明。
 
 RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 秒，空闲 CPU <1%，退出五秒内 Job 活动进程为零，中文用户名和干净 VM 全通过。达到 94% 后才发布 `v0.2.0-rc.1`。
 

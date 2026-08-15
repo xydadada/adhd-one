@@ -41,7 +41,7 @@ node scripts/e2e/packaged.mjs `
   --scenario launch
 ```
 
-`--scenario` accepts `launch`, `force-kill`, `workspace-write`, or `runtime-rollback` and defaults to `launch`. `runtime-rollback` deliberately rejects Portable mode because its contract targets `%LOCALAPPDATA%` A/B state. `--cycles` defaults to `1` and is capped at `100`. Cycles are deliberately sequential so that each process has an independent temporary environment and its own port. The output path may be a `.json` file or a directory; a directory receives `packaged-evidence.json`.
+`--scenario` accepts `launch`, `force-kill`, `workspace-write`, `runtime-rollback`, or `qualification` and defaults to `launch`. `qualification` is fixed to one cycle and verifies the Control Window, cold Runtime, SecureBridge restart with a newer generation, stable Electron root identity, five-second graceful exit, cleanup and zero scoped residue. `runtime-rollback` deliberately rejects Portable mode because its contract targets `%LOCALAPPDATA%` A/B state. Other scenarios use `--cycles` from `1` to `100`. Cycles are deliberately sequential so that each process has an independent temporary environment and its own port. A directory output receives `qualification-evidence.json` for qualification and `packaged-evidence.json` otherwise.
 
 Force-kill example:
 
@@ -99,4 +99,6 @@ CDP connection failures use the stable `CDP_CONNECT_TIMEOUT` code. Runtime disco
 
 ## Windows 11 qualification evidence
 
-`npm run verify:win11-evidence -- <file.json>` validates the standalone RC qualification record. The schema is strict and path-free: Windows 11 x64 with build number 22000 or newer, an allowlisted executable name and lowercase SHA-256, first interaction at or below 15 seconds, hot ready at or below 8 seconds, one-minute idle CPU below 1%, exit at or below 5 seconds, and zero residual processes. The verifier is deliberately offline and does not collect or trust host state by itself; a separate Windows 11 runner/collector must generate the record and prove the digest and measurements before this gate can count toward release progress.
+`npm run prepare:win11-runner -- --output <absolute-directory> --node <absolute-node.exe>` stages the fixed E2E scripts, Node executable and lockfile-resolved Playwright/mock-server closure. On the clean Windows 11 VM, `npm run e2e:win11 -- -SetupPath <absolute-setup.exe> -EvidenceRoot <new-runner-child-directory> -RepoRoot <runner-directory>` runs the four-row path matrix. Each row installs and uninstalls the app and runs one bounded qualification cycle; the complete 14-cycle functional suite remains a separate one-time gate.
+
+`npm run verify:win11-evidence -- <file.json>` validates the standalone RC qualification record. The schema is strict and path-free: Windows 11 x64 with build number 22000 or newer, an allowlisted executable name and lowercase SHA-256, first interaction at or below 15 seconds, hot ready at or below 8 seconds, one-minute idle CPU below 1%, exit at or below 5 seconds, and zero residual processes. The verifier is deliberately offline. Host proof, runner preparation, qualification and path-matrix components now exist, but the trusted one-minute whole-application CPU collector and signed digest-binding orchestrator are still incomplete; current JSON must not be presented as Stable evidence.

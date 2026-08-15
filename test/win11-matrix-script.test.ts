@@ -45,19 +45,20 @@ describe('Windows 11 path matrix script contract', () => {
     expect(script).toContain("$usedPaths -contains $path");
   });
 
-  it('references only the existing installed and evidence verifier scripts', async () => {
+  it('runs the bounded qualification suite and validates both evidence records', async () => {
     const script = await readMatrixScript();
     const installedCall = script.indexOf('& $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence');
-    const verifierCall = script.indexOf('& $nodePath $verifyScript $row.Evidence');
+    const verifierCall = script.indexOf("$qualificationPath = Join-Path $row.Evidence 'qualification-evidence.json'");
 
     expect(script).toContain("Join-Path $repoRoot 'scripts/e2e/installed.ps1'");
-    expect(script).toContain("Join-Path $repoRoot 'scripts/verify-evidence.mjs'");
     expect(script).toContain("Join-Path $repoRoot 'node.exe'");
     expect(script).toContain('-NodePath $nodePath');
+    expect(script).toContain('-Suite qualification');
     expect(installedCall).toBeGreaterThanOrEqual(0);
     expect(verifierCall).toBeGreaterThan(installedCall);
     expect(script).toContain("if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }");
-    expect(script).toContain("if ($LASTEXITCODE -ne 0) { throw ('WIN11_MATRIX_VERIFY_FAILED_{0}' -f $row.Name) }");
+    expect(script).toContain("$qualification.tool -ne 'adhd-one-packaged-qualification'");
+    expect(script).toContain("$installedSummary.tool -ne 'adhd-one-installed-e2e'");
     expect(script).toContain('foreach ($row in $matrix)');
     expect(script).not.toMatch(/Start-(?:Job|ThreadJob)/iu);
     expect(script).not.toMatch(/ForEach-Object\s+-Parallel/iu);

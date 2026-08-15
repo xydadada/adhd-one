@@ -151,7 +151,8 @@ describe('installed E2E script contracts', () => {
     const script = await readFile(installedScriptPath, 'utf8');
     expect(script).toContain('Start-Process -FilePath $NodePath -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden');
     expect(script).toContain('& taskkill.exe /PID $suite.Id /T /F');
-    expect(script).toContain('$suite.WaitForExit(1800000)');
+    expect(script).toContain("$suiteTimeoutMs = if ($Suite -eq 'qualification') { 600000 } else { 1800000 }");
+    expect(script).toContain('$suite.WaitForExit($suiteTimeoutMs)');
     expect(script).toContain('try { $suite.WaitForExit(15000) | Out-Null } catch {}');
     expect(script).toContain("throw 'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'");
   });

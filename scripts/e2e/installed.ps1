@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$SetupPath,
   [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-  [string]$NodePath = 'node'
+  [string]$NodePath = 'node',
+  [ValidateSet('full', 'qualification')][string]$Suite = 'full'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,15 +168,23 @@ try {
     throw 'INSTALLED_E2E_SHORTCUT_CREATION_INVALID'
   }
 
-  $suiteArguments = @(
-    'scripts/e2e/run-packaged-suite.mjs',
-    '--exe',
-    ('"{0}"' -f $apps[0].FullName),
-    '--evidence-dir',
-    ('"{0}"' -f $evidence)
-  )
+  $suiteArguments = if ($Suite -eq 'qualification') {
+    @(
+      'scripts/e2e/packaged.mjs',
+      '--exe', ('"{0}"' -f $apps[0].FullName),
+      '--output', ('"{0}"' -f (Join-Path $evidence 'qualification-evidence.json')),
+      '--scenario', 'qualification'
+    )
+  } else {
+    @(
+      'scripts/e2e/run-packaged-suite.mjs',
+      '--exe', ('"{0}"' -f $apps[0].FullName),
+      '--evidence-dir', ('"{0}"' -f $evidence)
+    )
+  }
   $suite = Start-Process -FilePath $NodePath -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden
-  if (-not $suite.WaitForExit(1800000)) {
+  $suiteTimeoutMs = if ($Suite -eq 'qualification') { 600000 } else { 1800000 }
+  if (-not $suite.WaitForExit($suiteTimeoutMs)) {
     try { & taskkill.exe /PID $suite.Id /T /F | Out-Null } catch {}
     try { $suite.WaitForExit(15000) | Out-Null } catch {}
     throw 'INSTALLED_E2E_PACKAGED_SUITE_TIMEOUT'

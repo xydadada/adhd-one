@@ -115,9 +115,6 @@ $repoRoot = Get-ExistingDirectory -Path $repoRoot -ErrorCode 'WIN11_MATRIX_REPO_
 $installedScript = Get-ExistingFile `
   -Path (Join-Path $repoRoot 'scripts/e2e/installed.ps1') `
   -ErrorCode 'WIN11_MATRIX_INSTALLED_SCRIPT_MISSING'
-$verifyScript = Get-ExistingFile `
-  -Path (Join-Path $repoRoot 'scripts/verify-evidence.mjs') `
-  -ErrorCode 'WIN11_MATRIX_VERIFY_SCRIPT_MISSING'
 $nodePath = Get-ExistingFile `
   -Path (Join-Path $repoRoot 'node.exe') `
   -ErrorCode 'WIN11_MATRIX_NODE_MISSING'
@@ -234,11 +231,26 @@ try {
     $env:TEMP = $row.TEMP
     $env:TMP = $row.TMP
 
-    & $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence -NodePath $nodePath
+    & $installedScript -SetupPath $setup -EvidenceDirectory $row.Evidence -NodePath $nodePath -Suite qualification
     if (-not $?) { throw ('WIN11_MATRIX_INSTALLED_FAILED_{0}' -f $row.Name) }
 
-    & $nodePath $verifyScript $row.Evidence
-    if ($LASTEXITCODE -ne 0) { throw ('WIN11_MATRIX_VERIFY_FAILED_{0}' -f $row.Name) }
+    $qualificationPath = Join-Path $row.Evidence 'qualification-evidence.json'
+    $installedSummaryPath = Join-Path $row.Evidence 'installed-summary.json'
+    try {
+      $qualification = Get-Content -LiteralPath $qualificationPath -Raw -Encoding utf8 | ConvertFrom-Json
+      $installedSummary = Get-Content -LiteralPath $installedSummaryPath -Raw -Encoding utf8 | ConvertFrom-Json
+    } catch {
+      throw ('WIN11_MATRIX_EVIDENCE_INVALID_{0}' -f $row.Name)
+    }
+    if ($qualification.schemaVersion -ne 1 -or
+        $qualification.tool -ne 'adhd-one-packaged-qualification' -or
+        $qualification.passed -ne $true -or
+        $qualification.cyclesRequested -ne 1 -or
+        $qualification.cyclesCompleted -ne 1 -or
+        $installedSummary.tool -ne 'adhd-one-installed-e2e' -or
+        $installedSummary.passed -ne $true) {
+      throw ('WIN11_MATRIX_VERIFY_FAILED_{0}' -f $row.Name)
+    }
   }
 }
 finally {

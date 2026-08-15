@@ -138,6 +138,15 @@ async function writePortableEvidence(filename: string, value = portableEvidence(
 }
 
 describe('installed E2E script contracts', () => {
+  it('allows NSIS install roots containing spaces and preserves the unquoted final /D argument', async () => {
+    const script = await readFile(installedScriptPath, 'utf8');
+    expect(script).not.toContain("$installRoot -match '\\s'");
+    expect(script).toContain('$tempRoot = [IO.Path]::GetFullPath(');
+    expect(script).toContain('[IO.Directory]::CreateDirectory($runRoot)');
+    expect(script).toContain('[IO.Directory]::CreateDirectory($evidence)');
+    expect(script).toContain("-ArgumentList @('/S', '/currentuser', \"/D=$installRoot\")");
+  });
+
   it('uses a bounded outer packaged-suite watchdog and preserves stable timeout codes', async () => {
     const script = await readFile(installedScriptPath, 'utf8');
     expect(script).toContain("Start-Process -FilePath 'node' -ArgumentList $suiteArguments -PassThru -WindowStyle Hidden");

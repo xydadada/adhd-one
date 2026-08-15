@@ -8,7 +8,7 @@
 | Compatibility | Status |
 |---|---|
 | Windows 11 x64 | Target platform; clean Windows 11 verification is pending |
-| Windows Server 2025 CI | Hardened build, installed E2E and Portable ZIP E2E passed on run `31857910840`; this is not Windows 11 evidence |
+| Windows Server 2025 CI | Hardened build, 14-cycle installed E2E and Portable ZIP E2E passed on run `31870530357`; this is not Windows 11 evidence |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | Telemetry | Disabled by default |
 | Release status | [`v0.2.0-beta.2`](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2) prerelease published |
@@ -40,12 +40,12 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 
 ## Verification status
 
-- Windows Server 2025 CI: Quality run `31857910832` and Windows run `31857910840` passed on commit `c6801bca6d18d7309861677de44d995e6d21102d` (attempt 1). Build, production Fuses, physical license closure, unpacked Portable smoke, Portable ZIP E2E, installed launch, force-kill, real workspace-write/tool-call, ten consecutive starts, uninstall and the final all-jobs gate passed. Server 2025 results are not Windows 11 evidence.
+- Windows Server 2025 CI: Quality run `31870530352` and Windows run `31870530357` passed on commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe`. Build, production Fuses, physical license closure, real electron-updater feed, Runtime staging, unpacked Portable smoke, Portable ZIP E2E, installed launch, force-kill, real workspace-write/tool-call, persisted Runtime rollback, ten consecutive starts, uninstall and the final all-jobs gate passed. Server 2025 results are not Windows 11 evidence.
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
-- Packaged E2E: the hardened Windows Server 2025 suite passed 13/13 installed cycles plus unpacked and final Portable ZIP checks. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
-- Next CI gate: the installed suite now adds a fourteenth isolated cycle that seeds a present but version-mismatched Runtime candidate slot and requires the final EXE to persist a rollback to the bundled Runtime. It is not counted as passed until the corresponding Windows run is green.
-- Current local evidence: `npm run check` passed 28 test files (313 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), and the real electron-updater loopback feed harness passed Stable, Preview fallback, SHA-512 success and checksum rejection. The latest remote evidence remains the CI runs listed above until this batch is pushed and verified. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
+- Packaged E2E: the hardened Windows Server 2025 suite passed 14/14 installed cycles plus unpacked and final Portable ZIP checks. The added cycle seeded a present but version-mismatched slot B; the final EXE selected bundled and persisted the rollback both at ready and after clean exit. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
+- Next qualification gate: implement the Windows 11 evidence collector, then run the same installed suite plus performance and path matrices in a clean Windows 11 x64 VM. Server 2025 results do not count for this gate.
+- Current local evidence: `npm run check` passed 29 test files (327 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), and the real electron-updater loopback feed harness passed Stable, Preview fallback, SHA-512 success and checksum rejection. The latest remote evidence remains the CI runs listed above until this batch is pushed and verified. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
 
 ## Development
 

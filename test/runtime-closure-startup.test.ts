@@ -122,4 +122,39 @@ describe('RuntimeController closure startup gate', () => {
     expect(selection.slot).toBe('bundled');
     expect(state).toMatchObject({ active: 'bundled', previous: 'A', healthy: true, candidate: false, rolledBackFrom: 'A' });
   });
+
+  it.each(['A', 'B'] as const)('selects a valid matching candidate in slot %s without rollback', async slot => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-runtime-valid-slot-'));
+    roots.push(root);
+    const runtimes = path.join(root, 'runtimes');
+    const slotRoot = path.join(runtimes, `slot-${slot}`);
+    const packageDirectory = path.join(slotRoot, 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh');
+    await mkdir(packageDirectory, { recursive: true });
+    await writeFile(path.join(packageDirectory, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh', version: '1.2.3'
+    }));
+    await writeFile(path.join(runtimes, 'runtime-state.json'), JSON.stringify({
+      schemaVersion: 1, active: slot, previous: 'bundled', version: '1.2.3', healthy: false, candidate: true
+    }));
+    const controller = new RuntimeController({
+      get: () => ({ workspace: root, preferredPort: 43123 }), update: async () => undefined
+    } as never, {
+      appPath: root, resourcesPath: root, packaged: false,
+      dshHome: path.join(root, 'dsh-home'), logs: path.join(root, 'logs'), runtimes
+    });
+    const internal = controller as unknown as {
+      selectRuntime(): Promise<{ root: string; node: string; slot: string; version: string; candidate: boolean }>;
+      rollbackCandidate: ReturnType<typeof vi.fn>;
+    };
+    internal.rollbackCandidate = vi.fn(async () => true);
+
+    await expect(internal.selectRuntime()).resolves.toEqual({
+      root: path.join(slotRoot, 'dsh-runtime'),
+      node: path.join(slotRoot, 'node-runtime', 'node.exe'),
+      slot,
+      version: '1.2.3',
+      candidate: true
+    });
+    expect(internal.rollbackCandidate).not.toHaveBeenCalled();
+  });
 });

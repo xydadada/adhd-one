@@ -96,3 +96,7 @@ The JSON has schema version `1`, the executable basename, the selected `scenario
 CDP connection failures use the stable `CDP_CONNECT_TIMEOUT` code. Runtime discovery, snapshot evaluation, host description, and workspace RPC stages likewise use stage-specific stable codes; raw Playwright, fetch, or provider error messages are not printed or written to evidence. The existing CDP, control-window, graceful-exit, force-exit, and workspace timeouts are unchanged.
 
 `launch` and `force-kill` intentionally perform no provider request or workspace tool-call. Provider and workspace coverage is opt-in through `workspace-write`; it remains black-box and uses no approval UI.
+
+## Windows 11 qualification evidence
+
+`npm run verify:win11-evidence -- <file.json>` validates the standalone RC qualification record. The schema is strict and path-free: Windows 11 x64 with build number 22000 or newer, an allowlisted executable name and lowercase SHA-256, first interaction at or below 15 seconds, hot ready at or below 8 seconds, one-minute idle CPU below 1%, exit at or below 5 seconds, and zero residual processes. The verifier is deliberately offline and does not collect or trust host state by itself; a separate Windows 11 runner/collector must generate the record and prove the digest and measurements before this gate can count toward release progress.

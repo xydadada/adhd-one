@@ -8,11 +8,11 @@ $setup = [IO.Path]::GetFullPath($SetupPath)
 $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'INSTALLED_E2E_SETUP_MISSING' }
 
-$tempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { [IO.Path]::GetTempPath() } else { $env:RUNNER_TEMP }
+$tempRoot = [IO.Path]::GetFullPath($(if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { [IO.Path]::GetTempPath() } else { $env:RUNNER_TEMP }))
 $runRoot = Join-Path $tempRoot ('adhd-one-installed-' + [guid]::NewGuid().ToString('N'))
 $installRoot = Join-Path $runRoot 'install'
-if ($installRoot -match '\s') { throw 'INSTALLED_E2E_UNSAFE_NSiS_PATH' }
-New-Item -ItemType Directory -Path $runRoot,$evidence -Force | Out-Null
+[IO.Directory]::CreateDirectory($runRoot) | Out-Null
+[IO.Directory]::CreateDirectory($evidence) | Out-Null
 
 function Get-AdhdUninstallRecords {
   foreach ($root in @(

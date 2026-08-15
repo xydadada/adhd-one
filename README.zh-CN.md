@@ -8,7 +8,7 @@
 | 兼容性 | 状态 |
 |---|---|
 | Windows 11 x64 | 目标平台；干净 Windows 11 验证尚未完成 |
-| Windows Server 2025 CI | run `31857910840` 的 hardened build、安装版 E2E 和 Portable ZIP E2E 已通过；不能作为 Windows 11 证据 |
+| Windows Server 2025 CI | run `31870530357` 的 hardened build、安装版 14 循环 E2E 和 Portable ZIP E2E 已通过；不能作为 Windows 11 证据 |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | 发布状态 | 已发布 [`v0.2.0-beta.2`](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2) 预发布版 |
 | 代码签名 | Windows 产物未签名；会触发 SmartScreen 提示 |
@@ -45,12 +45,12 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 
 ## 当前验证状态
 
-- Windows Server 2025 CI：commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 和 Windows run `31857910840` 已全绿。构建、生产 Fuses、物理许可证闭包、unpacked Portable smoke、Portable ZIP E2E、安装版启动、强杀、真实 workspace-write/tool-call、连续十次启动、卸载和最终总门禁均通过。Server 2025 结果不能作为 Windows 11 证据。
+- Windows Server 2025 CI：commit `a0e436d67805f921511d3b5ec5e4d1d075dadcbe` 的 Quality run `31870530352` 和 Windows run `31870530357` 已全绿。构建、生产 Fuses、物理许可证闭包、真实 electron-updater feed、Runtime staging、unpacked Portable smoke、Portable ZIP E2E、安装版启动、强杀、真实 workspace-write/tool-call、持久化 Runtime 回滚、连续十次启动、卸载和最终总门禁均通过。Server 2025 结果不能作为 Windows 11 证据。
 - Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
-- Packaged E2E：Windows Server 2025 hardened 套件已通过安装版 13/13 循环，以及 unpacked 和最终 Portable ZIP 检查。所有已验证退出均清空 Runtime 与应用进程树；workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。
-- 下一项 CI 门禁：安装版套件已增加第 14 个隔离循环，预置一个存在但版本不匹配的 Runtime 候选槽，并要求最终 EXE 将回滚到 bundled 的结果持久化；对应 Windows run 全绿前不计为已通过。
-- 当前本地证据：`npm run check` 通过 28 个 test files（313 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），真实 electron-updater loopback feed 也通过 Stable、Preview fallback、SHA-512 成功和摘要拒绝路径；在本批次推送并通过前，远程证据仍以以上 CI run 为准。已发布的 Setup 资产为 151,012,608 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
+- Packaged E2E：Windows Server 2025 hardened 套件已通过安装版 14/14 循环，以及 unpacked 和最终 Portable ZIP 检查。新增循环预置存在但版本不匹配的 slot B；最终 EXE 在 ready 时选择 bundled，并在正常退出后保持回滚状态。所有已验证退出均清空 Runtime 与应用进程树；workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。
+- 下一项资格门禁：实现 Windows 11 evidence 采集器，再在干净 Windows 11 x64 VM 运行同一安装版套件、性能和路径矩阵；Server 2025 结果不计入该门禁。
+- 当前本地证据：`npm run check` 通过 29 个 test files（327 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），真实 electron-updater loopback feed 也通过 Stable、Preview fallback、SHA-512 成功和摘要拒绝路径；在本批次推送并通过前，远程证据仍以以上 CI run 为准。已发布的 Setup 资产为 151,012,608 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
 
 ## 本地开发
 

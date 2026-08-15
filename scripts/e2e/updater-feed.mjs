@@ -102,7 +102,7 @@ function sendResponse(response, statusCode, body, contentType) {
   response.end(payload);
 }
 
-async function startFeedServer(installerBuffer, stableChecksum, wrongChecksum) {
+async function startFeedServer(assets) {
   const state = {
     port: 0,
     requests: [],
@@ -143,7 +143,7 @@ async function startFeedServer(installerBuffer, stableChecksum, wrongChecksum) {
       const wrongArtifact = `${base}/download/${WRONG_CHECKSUM_TAG}/${WRONG_CHECKSUM_FILE}`;
 
       if (pathname === stableMetadata && !state.wrongChecksumMode) {
-        sendResponse(response, 200, yamlFor('1.0.1', STABLE_FILE, stableChecksum, installerBuffer.length), 'text/yaml; charset=utf-8');
+        sendResponse(response, 200, yamlFor('1.0.1', STABLE_FILE, assets.stable.checksum, assets.stable.buffer.length), 'text/yaml; charset=utf-8');
         return;
       }
       if (pathname === previewChannelMetadata) {
@@ -153,24 +153,24 @@ async function startFeedServer(installerBuffer, stableChecksum, wrongChecksum) {
       }
       if (pathname === previewFallbackMetadata && !state.wrongChecksumMode) {
         state.previewFallbackServed = true;
-        sendResponse(response, 200, yamlFor('1.0.2-beta.2', PREVIEW_FILE, stableChecksum, installerBuffer.length), 'text/yaml; charset=utf-8');
+        sendResponse(response, 200, yamlFor('1.0.2-beta.2', PREVIEW_FILE, assets.preview.checksum, assets.preview.buffer.length), 'text/yaml; charset=utf-8');
         return;
       }
       if (pathname === wrongMetadata && state.wrongChecksumMode) {
         state.wrongChecksumServed = true;
-        sendResponse(response, 200, yamlFor('1.0.3', WRONG_CHECKSUM_FILE, wrongChecksum, installerBuffer.length), 'text/yaml; charset=utf-8');
+        sendResponse(response, 200, yamlFor('1.0.3', WRONG_CHECKSUM_FILE, assets.wrong.checksum, assets.wrong.buffer.length), 'text/yaml; charset=utf-8');
         return;
       }
       if (pathname === stableArtifact && !state.wrongChecksumMode) {
-        sendResponse(response, 200, installerBuffer, 'application/octet-stream');
+        sendResponse(response, 200, assets.stable.buffer, 'application/octet-stream');
         return;
       }
       if (pathname === previewArtifact && !state.wrongChecksumMode) {
-        sendResponse(response, 200, installerBuffer, 'application/octet-stream');
+        sendResponse(response, 200, assets.preview.buffer, 'application/octet-stream');
         return;
       }
       if (pathname === wrongArtifact && state.wrongChecksumMode) {
-        sendResponse(response, 200, installerBuffer, 'application/octet-stream');
+        sendResponse(response, 200, assets.wrong.buffer, 'application/octet-stream');
         return;
       }
       sendResponse(response, 404, '', 'text/plain; charset=utf-8');
@@ -327,7 +327,7 @@ async function runFeedScenario(feed, root, scenario) {
   }
 }
 
-async function runChecksumMismatchScenario(feed, root, installerBuffer) {
+async function runChecksumMismatchScenario(feed, root) {
   const updater = await makeUpdater(feed, join(root, 'checksum-mismatch'), '1.0.0', false, null);
   const result = await updater.checkForUpdates();
   if (result === null || result.isUpdateAvailable !== true) fail('CHECKSUM_FEED_NOT_FOUND');
@@ -337,7 +337,6 @@ async function runChecksumMismatchScenario(feed, root, installerBuffer) {
     if (!isChecksumMismatch(error)) fail('CHECKSUM_MISMATCH_NOT_REPORTED');
     return;
   }
-  void installerBuffer;
   fail('CHECKSUM_MISMATCH_NOT_REPORTED');
 }
 
@@ -356,13 +355,17 @@ async function runHarness(electronApp) {
   const { session } = require('electron');
   await session.fromPartition('electron-updater', { cache: false }).setProxy({ mode: 'direct' });
 
-  const installerBuffer = Buffer.from('short in-memory installer buffer\n', 'utf8');
-  const stableChecksum = sha512Base64(installerBuffer);
-  const wrongChecksum = sha512Base64(Buffer.from('not the installer', 'utf8'));
+  const stableInstallerBuffer = Buffer.from('stable in-memory installer buffer\n', 'utf8');
+  const previewInstallerBuffer = Buffer.from('preview in-memory installer buffer\n', 'utf8');
+  const wrongInstallerBuffer = Buffer.from('wrong-checksum in-memory installer buffer\n', 'utf8');
   const root = await mkdtemp(join(tmpdir(), 'adhd-one-updater-feed-'));
   let feed;
   try {
-    feed = await startFeedServer(installerBuffer, stableChecksum, wrongChecksum);
+    feed = await startFeedServer({
+      stable: { buffer: stableInstallerBuffer, checksum: sha512Base64(stableInstallerBuffer) },
+      preview: { buffer: previewInstallerBuffer, checksum: sha512Base64(previewInstallerBuffer) },
+      wrong: { buffer: wrongInstallerBuffer, checksum: sha512Base64(Buffer.from('not the wrong installer', 'utf8')) }
+    });
     await runFeedScenario(feed, root, {
       name: 'stable',
       currentVersion: '1.0.0',
@@ -370,7 +373,7 @@ async function runHarness(electronApp) {
       channel: null,
       expectedVersion: '1.0.1',
       expectedTag: STABLE_TAG,
-      installerBuffer
+      installerBuffer: stableInstallerBuffer
     });
     await runFeedScenario(feed, root, {
       name: 'preview',
@@ -379,15 +382,18 @@ async function runHarness(electronApp) {
       channel: 'beta',
       expectedVersion: '1.0.2-beta.2',
       expectedTag: PREVIEW_TAG,
-      installerBuffer
+      installerBuffer: previewInstallerBuffer
     });
     feed.state.wrongChecksumMode = true;
-    await runChecksumMismatchScenario(feed, root, installerBuffer);
+    await runChecksumMismatchScenario(feed, root);
 
     if (feed.state.nonLoopbackConnection || feed.state.handlerFailure) fail('LOCAL_SERVER_CONTRACT_FAILED');
     if (!feed.state.requests.includes(`/${OWNER}/${REPOSITORY}/releases.atom`)) fail('ATOM_FEED_NOT_REQUESTED');
     if (!feed.state.requests.includes(`/api/v3/repos/${OWNER}/${REPOSITORY}/releases/latest`)) fail('LATEST_RELEASE_NOT_REQUESTED');
     if (!feed.state.requests.includes(`/${OWNER}/${REPOSITORY}/releases/download/${STABLE_TAG}/latest.yml`)) fail('STABLE_LATEST_YML_NOT_REQUESTED');
+    if (!feed.state.requests.includes(`/${OWNER}/${REPOSITORY}/releases/download/${STABLE_TAG}/${STABLE_FILE}`)) fail('STABLE_ARTIFACT_NOT_REQUESTED');
+    if (!feed.state.requests.includes(`/${OWNER}/${REPOSITORY}/releases/download/${PREVIEW_TAG}/${PREVIEW_FILE}`)) fail('PREVIEW_ARTIFACT_NOT_REQUESTED');
+    if (!feed.state.requests.includes(`/${OWNER}/${REPOSITORY}/releases/download/${WRONG_CHECKSUM_TAG}/${WRONG_CHECKSUM_FILE}`)) fail('WRONG_CHECKSUM_ARTIFACT_NOT_REQUESTED');
     if (!feed.state.previewChannelMissed || !feed.state.previewFallbackServed) fail('PREVIEW_FALLBACK_NOT_USED');
     if (!feed.state.wrongChecksumServed) fail('WRONG_CHECKSUM_FEED_NOT_REQUESTED');
   } finally {

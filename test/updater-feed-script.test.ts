@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const script = readFileSync(new URL('../scripts/e2e/updater-feed.mjs', import.meta.url), 'utf8');
+const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  scripts?: Record<string, string>;
+};
 
 describe('electron-updater feed E2E harness', () => {
   it('is loopback-only and removes ambient network credentials', () => {
@@ -24,13 +27,19 @@ describe('electron-updater feed E2E harness', () => {
     expect(script).toContain('await updater.checkForUpdates()');
     expect(script).toContain('await updater.downloadUpdate()');
     expect(script).toContain('downloadedBuffer.equals(scenario.installerBuffer)');
+    expect(script).toContain("Buffer.from('stable in-memory installer buffer");
+    expect(script).toContain("Buffer.from('preview in-memory installer buffer");
     expect(script).toContain("!feed.state.previewChannelMissed || !feed.state.previewFallbackServed");
     expect(script).toContain("error?.code === 'ERR_CHECKSUM_MISMATCH'");
     expect(script).toContain("fail('CHECKSUM_MISMATCH_NOT_REPORTED')");
     expect(script).toContain("if (!feed.state.wrongChecksumServed) fail('WRONG_CHECKSUM_FEED_NOT_REQUESTED')");
+    expect(script).toContain("fail('STABLE_ARTIFACT_NOT_REQUESTED')");
+    expect(script).toContain("fail('PREVIEW_ARTIFACT_NOT_REQUESTED')");
+    expect(script).toContain("fail('WRONG_CHECKSUM_ARTIFACT_NOT_REQUESTED')");
   });
 
   it('cannot install and has bounded, stable output', () => {
+    expect(packageJson.scripts?.['e2e:updater-feed']).toBe('node scripts/e2e/updater-feed.mjs');
     expect(script).toContain("fail('INSTALL_ATTEMPTED')");
     expect(script).toMatch(/relaunch\(\) \{[\s\S]*fail\('INSTALL_ATTEMPTED'\);[\s\S]*quit\(\) \{[\s\S]*fail\('INSTALL_ATTEMPTED'\)/u);
     expect(script).toContain("updater.quitAndInstall = () => fail('INSTALL_ATTEMPTED')");

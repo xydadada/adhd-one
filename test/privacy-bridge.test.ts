@@ -135,6 +135,19 @@ describe('privacy-safe IPC bridge', () => {
     await expect(invoke('app:quit')).resolves.toEqual({ accepted: true });
     await expect(invoke('runtime:restart')).rejects.toMatchObject({ code: 'APP_QUITTING', message: 'APP_QUITTING' });
     expect(runtime.restart).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(windows.quit).toHaveBeenCalledOnce();
+  });
+
+  it('starts native quit once and consumes a rejected background quit promise', async () => {
+    const { invoke, windows } = createBridge();
+    windows.quit.mockRejectedValueOnce(new Error('native quit rejected'));
+
+    await expect(invoke('app:quit')).resolves.toEqual({ accepted: true });
+    await expect(invoke('app:quit')).resolves.toEqual({ accepted: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(windows.quit).toHaveBeenCalledOnce();
   });
 

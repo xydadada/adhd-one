@@ -113,8 +113,9 @@ export function installSecureBridge(input: {
     workspace: input.settings.get().workspace
   }), { allowDuringQuit: true });
   handle('app:quit', () => {
+    if (quitState.isQuitting()) return { accepted: true };
     quitState.beginQuit();
-    void input.windows.quit();
+    void Promise.resolve().then(() => input.windows.quit()).catch(() => undefined);
     return { accepted: true };
   }, { allowDuringQuit: true });
   handle('workspace:choose', async (_event, _value, assertActive) => {

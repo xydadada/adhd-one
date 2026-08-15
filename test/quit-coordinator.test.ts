@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
-  HARD_EXIT_DELAY_MS,
   QuitCoordinator,
   RUNTIME_STOP_TIMEOUT_MS,
   type QuitCoordinatorDependencies
@@ -52,7 +51,7 @@ describe('QuitCoordinator', () => {
     expect(fixture.runtime.stop).toHaveBeenCalledOnce();
     expect(fixture.runtime.forceShutdown).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS - 1);
+    await vi.advanceTimersByTimeAsync(RUNTIME_STOP_TIMEOUT_MS - 1);
     expect(fixture.hardExit).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(fixture.hardExit).toHaveBeenCalledWith(0);
@@ -73,7 +72,7 @@ describe('QuitCoordinator', () => {
 
     expect(order).toEqual([
       `schedule:${RUNTIME_STOP_TIMEOUT_MS}`,
-      `schedule:${HARD_EXIT_DELAY_MS}`,
+      `schedule:${RUNTIME_STOP_TIMEOUT_MS}`,
       'appExit:0'
     ]);
   });
@@ -92,7 +91,7 @@ describe('QuitCoordinator', () => {
     await quit;
 
     expect(fixture.runtime.forceShutdown).toHaveBeenCalledOnce();
-    expect(fixture.calls).toEqual(['prepareToQuit', 'forceShutdown', 'destroyForQuit', 'appExit:1']);
+    expect(fixture.calls).toEqual(['prepareToQuit', 'forceShutdown', 'hardExit:1', 'destroyForQuit', 'appExit:1']);
   });
 
   it('keeps the hard-exit fallback inside the original five-second budget', async () => {
@@ -125,7 +124,7 @@ describe('QuitCoordinator', () => {
 
     expect(fixture.runtime.forceShutdown).toHaveBeenCalledOnce();
     expect(fixture.appExit).toHaveBeenCalledWith(23);
-    await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(RUNTIME_STOP_TIMEOUT_MS);
     expect(fixture.hardExit).toHaveBeenCalledWith(23);
   });
 
@@ -139,7 +138,7 @@ describe('QuitCoordinator', () => {
     await first;
 
     fixture.coordinator.cancelFallback();
-    await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS + 1);
+    await vi.advanceTimersByTimeAsync(RUNTIME_STOP_TIMEOUT_MS + 1);
 
     expect(fixture.runtime.stop).toHaveBeenCalledOnce();
     expect(fixture.appExit).toHaveBeenCalledOnce();
@@ -155,7 +154,7 @@ describe('QuitCoordinator', () => {
 
     await fixture.coordinator.quit();
     electronExited = true;
-    await vi.advanceTimersByTimeAsync(HARD_EXIT_DELAY_MS + 1);
+    await vi.advanceTimersByTimeAsync(RUNTIME_STOP_TIMEOUT_MS + 1);
 
     expect(fixture.hardExit).not.toHaveBeenCalled();
   });

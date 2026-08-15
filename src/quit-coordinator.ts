@@ -45,6 +45,8 @@ export class QuitCoordinator {
   private fallbackTimer: QuitTimer | undefined;
   private electronExited = false;
   private hardExitCalled = false;
+  private forceShutdownCalled = false;
+  private fallbackExitCode = 1;
 
   constructor(private readonly dependencies: QuitCoordinatorDependencies) {
     this.schedule = dependencies.setTimeout ?? ((callback, delay) => setTimeout(callback, delay));
@@ -81,24 +83,23 @@ export class QuitCoordinator {
   }
 
   private async coordinate(requestedExitCode: number | undefined): Promise<void> {
-    const hardDeadline = Date.now() + RUNTIME_STOP_TIMEOUT_MS;
+    const hardDeadline = Date.now() + this.stopTimeoutMs;
+    this.fallbackExitCode = requestedExitCode ?? 1;
+    // Arm the absolute deadline before any shutdown hook can consume time.
+    this.scheduleHardExit(this.stopTimeoutMs);
     try { this.dependencies.windows.prepareToQuit?.(); } catch { /* continue shutdown */ }
 
     let stopped = false;
-    try { stopped = await this.stopWithinDeadline(); } catch { /* treat coordinator failures as stop failures */ }
+    try { stopped = await this.stopWithinDeadline(Math.max(0, hardDeadline - Date.now())); } catch { /* treat coordinator failures as stop failures */ }
 
     const exitCode = requestedExitCode ?? (stopped ? 0 : 1);
-    if (!stopped) {
-      try { this.dependencies.runtime.forceShutdown(); } catch { /* continue shutdown */ }
-    }
+    this.fallbackExitCode = exitCode;
+    if (!stopped) this.forceShutdownOnce();
     try { this.dependencies.windows.destroyForQuit(); } catch { /* continue shutdown */ }
-    // Arm the last-resort exit before entering Electron's native shutdown.
-    // app.exit() may not return control to JavaScript on every Windows exit path.
-    this.scheduleHardExit(exitCode, Math.min(this.hardExitDelayMs, Math.max(0, hardDeadline - Date.now())));
     try { this.dependencies.appExit(exitCode); } catch { /* hardExit remains available */ }
   }
 
-  private async stopWithinDeadline(): Promise<boolean> {
+  private async stopWithinDeadline(timeoutMs = this.stopTimeoutMs): Promise<boolean> {
     let stopPromise: Promise<boolean>;
     try {
       stopPromise = Promise.resolve(this.dependencies.runtime.stop()).then(() => true, () => false);
@@ -108,7 +109,7 @@ export class QuitCoordinator {
 
     let timeout: QuitTimer | undefined;
     const deadline = new Promise<boolean>(resolve => {
-      timeout = this.schedule(() => resolve(false), this.stopTimeoutMs);
+      timeout = this.schedule(() => resolve(false), timeoutMs);
     });
     try {
       return await Promise.race([stopPromise, deadline]);
@@ -117,14 +118,21 @@ export class QuitCoordinator {
     }
   }
 
-  private scheduleHardExit(exitCode: number, delay = this.hardExitDelayMs): void {
+  private scheduleHardExit(delay = this.hardExitDelayMs): void {
     if (this.electronExited || this.dependencies.isElectronExited?.()) return;
     this.fallbackTimer = this.schedule(() => {
       this.fallbackTimer = undefined;
       if (this.electronExited || this.dependencies.isElectronExited?.() || this.hardExitCalled) return;
       this.hardExitCalled = true;
-      try { this.dependencies.hardExit(exitCode); } catch { /* last-resort attempt is complete */ }
+      this.forceShutdownOnce();
+      try { this.dependencies.hardExit(this.fallbackExitCode); } catch { /* last-resort attempt is complete */ }
     }, delay);
+  }
+
+  private forceShutdownOnce(): void {
+    if (this.forceShutdownCalled) return;
+    this.forceShutdownCalled = true;
+    try { this.dependencies.runtime.forceShutdown(); } catch { /* continue shutdown */ }
   }
 }
 

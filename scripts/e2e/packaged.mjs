@@ -477,7 +477,7 @@ export function isHostToolchainPathExcluded(environment) {
   if (!environment || typeof environment !== 'object') return false;
   const systemRoot = environment.SystemRoot ?? environment.windir;
   if (typeof systemRoot !== 'string' || systemRoot.length === 0) return false;
-  return environment.PATH === path.join(systemRoot, 'System32');
+  return environment.PATH === path.win32.join(systemRoot, 'System32');
 }
 
 function observeExit(child) {

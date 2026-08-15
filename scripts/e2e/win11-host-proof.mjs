@@ -3,6 +3,7 @@ import { createReadStream as defaultCreateReadStream } from 'node:fs';
 import { lstat as defaultLstat, realpath as defaultRealpath } from 'node:fs/promises';
 import { execFile as defaultExecFile } from 'node:child_process';
 import { basename, isAbsolute, normalize } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(defaultExecFile);
@@ -373,3 +374,23 @@ export const collectWindows11HostProof = collectWin11HostProof;
 export const collectWindows11HostEvidence = collectWin11HostProof;
 
 export default collectWin11HostProof;
+
+export async function runWin11HostProofCli(argv = process.argv.slice(2), options = {}) {
+  if (!Array.isArray(argv) || argv.length !== 1 || argv[0] !== '--host-only') {
+    fail(WIN11_HOST_PROOF_ERRORS.INVALID_ARGUMENT);
+  }
+  const write = options.write ?? (value => process.stdout.write(value));
+  if (typeof write !== 'function') fail(WIN11_HOST_PROOF_ERRORS.INVALID_ARGUMENT);
+  const host = await collectWindowsHostProof(options);
+  write(`${JSON.stringify(host)}\n`);
+  return host;
+}
+
+const invokedPath = process.argv[1];
+if (typeof invokedPath === 'string' && pathToFileURL(invokedPath).href === import.meta.url) {
+  runWin11HostProofCli().catch(error => {
+    const code = error instanceof Win11HostProofError ? error.code : WIN11_HOST_PROOF_ERRORS.INVALID_ARGUMENT;
+    process.stderr.write(`${code}\n`);
+    process.exitCode = 1;
+  });
+}

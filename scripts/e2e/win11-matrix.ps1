@@ -118,6 +118,22 @@ $installedScript = Get-ExistingFile `
 $nodePath = Get-ExistingFile `
   -Path (Join-Path $repoRoot 'node.exe') `
   -ErrorCode 'WIN11_MATRIX_NODE_MISSING'
+$hostProofScript = Get-ExistingFile `
+  -Path (Join-Path $repoRoot 'scripts/e2e/win11-host-proof.mjs') `
+  -ErrorCode 'WIN11_MATRIX_HOST_PROOF_MISSING'
+
+$hostProofOutput = & $nodePath $hostProofScript --host-only
+if ($LASTEXITCODE -ne 0) { throw 'WIN11_MATRIX_HOST_PROOF_FAILED' }
+try {
+  $hostProof = $hostProofOutput | ConvertFrom-Json
+} catch {
+  throw 'WIN11_MATRIX_HOST_PROOF_INVALID'
+}
+if ($hostProof.os -ne 'Windows 11' -or
+    $hostProof.architecture -ne 'x64' -or
+    $hostProof.buildNumber -lt 22000) {
+  throw 'WIN11_MATRIX_HOST_PROOF_INVALID'
+}
 
 $evidenceRoot = ConvertTo-AbsolutePath -Value $EvidenceRoot -ErrorCode 'WIN11_MATRIX_EVIDENCE_NOT_ABSOLUTE'
 if (Test-Path -LiteralPath $evidenceRoot) { throw 'WIN11_MATRIX_EVIDENCE_MUST_BE_NEW' }

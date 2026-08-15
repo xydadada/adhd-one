@@ -25,6 +25,11 @@ describe('Windows 11 path matrix script contract', () => {
     expect(script).toContain('ReparsePoint');
     expect(script).toContain("PlatformID]::Win32NT");
     expect(script).toContain("Version.Build -lt 22000");
+    expect(script).toContain("Join-Path $repoRoot 'scripts/e2e/win11-host-proof.mjs'");
+    expect(script).toContain('& $nodePath $hostProofScript --host-only');
+    expect(script).toContain("$hostProof.os -ne 'Windows 11'");
+    expect(script).toContain("$hostProof.architecture -ne 'x64'");
+    expect(script).toContain("throw 'WIN11_MATRIX_HOST_PROOF_FAILED'");
   });
 
   it('contains exactly four explicit matrix rows and the long-path target', async () => {

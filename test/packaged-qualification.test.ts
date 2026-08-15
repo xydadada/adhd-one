@@ -84,6 +84,9 @@ describe('packaged qualification contracts', () => {
         restartRuntimeAccepted: true,
         restartReadyVerified: true,
         restartToReadyMs: 45,
+        idleCpuMeasured: true,
+        idleCpuPercent: 0.25,
+        idleCpuProcessCount: 3,
         hotGeneration: 2,
         electronRootStable: true,
         coldProcessTreeObserved: true,
@@ -128,12 +131,15 @@ describe('packaged qualification contracts', () => {
       hostToolchainPathExcluded: true,
       coldGeneration: 1,
       hotGeneration: 2,
+      idleCpuMeasured: true,
+      idleCpuPercent: 0.25,
+      idleCpuProcessCount: 3,
       electronRootStable: true,
       quitToExitMs: 25,
       forcedTermination: false,
       errorCode: 'QUALIFICATION_FAILED'
     });
-    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|cpu|"host":|sha256|deadbeef/iu);
+    expect(JSON.stringify(value)).not.toMatch(/Alice|secret|AppData|rawOutput|"cpu":|"host":|sha256|deadbeef/iu);
   });
 
   it('proves the app launch environment excludes the inherited host toolchain PATH', () => {
@@ -168,17 +174,38 @@ describe('packaged qualification contracts', () => {
   it.each([
     ['spawnToControlWindowMs', 15_001],
     ['restartToReadyMs', 8_001],
+    ['idleCpuPercent', 1],
     ['quitToExitMs', 5_001]
   ])('fails closed when %s exceeds the qualification limit', (field, value) => {
     const cycle = {
       passed: true,
+      hostToolchainPathExcluded: true,
       spawnToControlWindowMs: 1,
       restartToReadyMs: 1,
+      idleCpuMeasured: true,
+      idleCpuPercent: 0.5,
+      idleCpuProcessCount: 3,
       quitToExitMs: 1,
       forcedTermination: false,
       [field]: value
     };
     expect(sanitizeQualificationEvidence({ passed: true, cycles: [cycle] }).passed).toBe(false);
+  });
+
+  it('fails closed when the real CPU measurement marker or process count is missing', () => {
+    const base = {
+      passed: true,
+      hostToolchainPathExcluded: true,
+      spawnToControlWindowMs: 1,
+      restartToReadyMs: 1,
+      idleCpuMeasured: true,
+      idleCpuPercent: 0.1,
+      idleCpuProcessCount: 3,
+      quitToExitMs: 1,
+      forcedTermination: false
+    };
+    expect(sanitizeQualificationEvidence({ passed: true, cycles: [{ ...base, idleCpuMeasured: false }] }).passed).toBe(false);
+    expect(sanitizeQualificationEvidence({ passed: true, cycles: [{ ...base, idleCpuProcessCount: 0 }] }).passed).toBe(false);
   });
 
   it('statically requires the same ControlWindow/profile flow, generation gate, merged audit, and quit timing', async () => {
@@ -195,7 +222,9 @@ describe('packaged qualification contracts', () => {
     expect(qualification).toContain('control.evaluate(() => window.adhdOne.restartRuntime())');
     expect(qualification).toContain('waitForRuntimeReady(control, child, exitPromise, minimumGeneration)');
     expect(qualification).toContain('mergeProcessTrees(coldTree, hotTree)');
-    expect(qualification).not.toMatch(/requestHostDescribe|host\.describe|idleCpu|sha256|hash/iu);
+    expect(qualification).toContain('measureWindowsProcessCpu({ rootPid: child.pid })');
+    expect(qualification).toContain('record.idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent');
+    expect(qualification).not.toMatch(/requestHostDescribe|host\.describe|sha256|hash/iu);
 
     const terminationStart = script.indexOf('async function terminateQualificationApplication');
     const terminationEnd = script.indexOf('async function prepareRun', terminationStart);

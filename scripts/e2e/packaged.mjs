@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server';
+import { measureWindowsProcessCpu } from './windows-process-cpu.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,7 @@ const RUNTIME_ROLLBACK_STATE_VERSION = '999.0.0-e2e-broken';
 const RUNTIME_ROLLBACK_PACKAGE_VERSION = '998.0.0-e2e-mismatch';
 const QUALIFICATION_EVIDENCE_SCHEMA_VERSION = 1;
 const QUALIFICATION_EVIDENCE_TOOL = 'adhd-one-packaged-qualification';
-const QUALIFICATION_LIMITS = Object.freeze({ firstInteractiveMs: 15_000, hotReadyMs: 8_000, exitMs: 5_000 });
+const QUALIFICATION_LIMITS = Object.freeze({ firstInteractiveMs: 15_000, hotReadyMs: 8_000, idleCpuPercent: 1, exitMs: 5_000 });
 
 const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write', 'runtime-rollback']);
 export const CLI_SCENARIOS = new Set([...E2E_SCENARIOS, 'qualification']);
@@ -38,7 +39,7 @@ const SAFE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const TRUSTED_ERROR_CODE_PREFIXES = [
   'APP_', 'APPLICATION_', 'RUNTIME_', 'CONTROL_', 'HOST_', 'CDP_', 'E2E_',
   'LOOPBACK_', 'PROCESS_', 'EXE_', 'INVALID_', 'NOT_', 'ACCESS_', 'NETWORK_',
-  'WORKSPACE_', 'MOCK_', 'RPC_', 'DSH_', 'PORTABLE_', 'CLEANUP_'
+  'WORKSPACE_', 'MOCK_', 'RPC_', 'DSH_', 'PORTABLE_', 'CLEANUP_', 'WINDOWS_'
 ];
 
 function safeCode(value) {
@@ -98,6 +99,10 @@ async function withStableStage(operation, failureCode, timeoutCode) {
 
 function nonNegativeInteger(value, fallback) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function nonNegativeFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function safePid(value) {
@@ -265,11 +270,15 @@ function sanitizeQualificationCycle(record) {
   const cycle = record ?? {};
   const forcedTermination = cycle.forcedTermination === true;
   const hostToolchainPathExcluded = cycle.hostToolchainPathExcluded === true;
+  const idleCpuMeasured = cycle.idleCpuMeasured === true;
   const spawnToControlWindowMs = nonNegativeInteger(cycle.spawnToControlWindowMs);
   const restartToReadyMs = nonNegativeInteger(cycle.restartToReadyMs);
+  const idleCpuPercent = nonNegativeFiniteNumber(cycle.idleCpuPercent);
+  const idleCpuProcessCount = nonNegativeInteger(cycle.idleCpuProcessCount, 0);
   const quitToExitMs = nonNegativeInteger(cycle.quitToExitMs);
   const withinLimits = spawnToControlWindowMs !== undefined && spawnToControlWindowMs <= QUALIFICATION_LIMITS.firstInteractiveMs
     && restartToReadyMs !== undefined && restartToReadyMs <= QUALIFICATION_LIMITS.hotReadyMs
+    && idleCpuPercent !== undefined && idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent
     && quitToExitMs !== undefined && quitToExitMs <= QUALIFICATION_LIMITS.exitMs;
   const errorCode = cycle.errorCode === undefined
     ? undefined
@@ -277,7 +286,8 @@ function sanitizeQualificationCycle(record) {
   return {
     cycle: nonNegativeInteger(cycle.cycle, 1),
     scenario: 'qualification',
-    passed: cycle.passed === true && !forcedTermination && hostToolchainPathExcluded && withinLimits,
+    passed: cycle.passed === true && !forcedTermination && hostToolchainPathExcluded
+      && idleCpuMeasured && idleCpuProcessCount > 0 && withinLimits,
     spawnVerified: cycle.spawnVerified === true,
     hostToolchainPathExcluded,
     spawnToControlWindowMs,
@@ -289,6 +299,9 @@ function sanitizeQualificationCycle(record) {
     restartRuntimeAccepted: cycle.restartRuntimeAccepted === true,
     restartReadyVerified: cycle.restartReadyVerified === true,
     restartToReadyMs,
+    idleCpuMeasured,
+    idleCpuPercent,
+    idleCpuProcessCount,
     hotGeneration: nonNegativeInteger(cycle.hotGeneration),
     electronRootStable: cycle.electronRootStable === true,
     coldProcessTreeObserved: cycle.coldProcessTreeObserved === true,
@@ -1523,6 +1536,8 @@ function qualificationFailureCode(record) {
   if (!record.restartRequested || !record.restartRuntimeAccepted) return 'RUNTIME_RESTART_FAILED';
   if (!record.restartReadyVerified) return 'RUNTIME_RESTART_READY_FAILED';
   if (!record.electronRootStable) return 'ELECTRON_ROOT_IDENTITY_UNSTABLE';
+  if (!record.idleCpuMeasured) return 'WINDOWS_PROCESS_CPU_NOT_MEASURED';
+  if (!(record.idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent)) return 'WINDOWS_PROCESS_CPU_LIMIT_EXCEEDED';
   if (!record.quitAccepted) return 'APP_QUIT_NOT_ACCEPTED';
   if (!record.gracefulExitVerified) return 'APPLICATION_GRACEFUL_EXIT_FAILED';
   if (!record.exitVerified) return 'APPLICATION_EXIT_VERIFICATION_FAILED';
@@ -1548,6 +1563,9 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     restartRuntimeAccepted: false,
     restartReadyVerified: false,
     restartToReadyMs: undefined,
+    idleCpuMeasured: false,
+    idleCpuPercent: undefined,
+    idleCpuProcessCount: 0,
     hotGeneration: undefined,
     electronRootStable: false,
     coldProcessTreeObserved: false,
@@ -1670,6 +1688,17 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
     if (!record.hotProcessTreeObserved) throw new Error('RUNTIME_HOT_PROCESS_TREE_NOT_OBSERVED');
     record.electronRootStable = electronRootIdentityStable(coldTree, hotTree, child.pid);
     if (!record.electronRootStable) throw new Error('ELECTRON_ROOT_IDENTITY_UNSTABLE');
+    const cpu = await withStableStage(
+      () => withTimeout(measureWindowsProcessCpu({ rootPid: child.pid }), 90_000, 'WINDOWS_PROCESS_CPU'),
+      'WINDOWS_PROCESS_CPU_FAILED',
+      'WINDOWS_PROCESS_CPU_TIMEOUT'
+    );
+    record.idleCpuMeasured = true;
+    record.idleCpuPercent = cpu.averageCpuPercent;
+    record.idleCpuProcessCount = cpu.processCount;
+    if (!(record.idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent)) {
+      throw new Error('WINDOWS_PROCESS_CPU_LIMIT_EXCEEDED');
+    }
     mergedTree = mergeProcessTrees(coldTree, hotTree);
     record.mergedProcessTreeCount = mergedTree.length;
     if (mergedTree.length < 3) throw new Error('RUNTIME_COLD_HOT_PROCESS_TREES_INCOMPLETE');
@@ -1758,6 +1787,8 @@ async function runQualificationCycle(executable, chromium, requirePortable = fal
       && record.restartRuntimeAccepted
       && record.restartReadyVerified
       && record.electronRootStable
+      && record.idleCpuMeasured
+      && record.idleCpuPercent < QUALIFICATION_LIMITS.idleCpuPercent
       && record.spawnToControlWindowMs <= QUALIFICATION_LIMITS.firstInteractiveMs
       && record.restartToReadyMs <= QUALIFICATION_LIMITS.hotReadyMs
       && record.quitToExitMs <= QUALIFICATION_LIMITS.exitMs

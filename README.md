@@ -44,8 +44,8 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
 - Packaged E2E: the hardened Windows Server 2025 suite passed 14/14 installed cycles plus unpacked and final Portable ZIP checks. The added cycle seeded a present but version-mismatched slot B; the final EXE selected bundled and persisted the rollback both at ready and after clean exit. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
-- Next qualification gate: run the self-contained runner and four-row path matrix in a clean Windows 11 x64 VM, then finish the trusted one-minute CPU collector and bind its output to the tested release digest. Server 2025 results do not count for this gate.
-- Current local evidence: `npm run check` passed 35 test files (409 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias). The latest pushed CI batch is still pending verification. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
+- Next qualification gate: run the self-contained runner and four-row path matrix in a clean Windows 11 x64 VM, then bind its real one-minute whole-process-tree CPU result and the other evidence to the tested release digest in the signed orchestrator. Server 2025 results do not count for this gate.
+- Current local evidence: `npm run check` passed 35 test files (413 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias). The latest pushed CI batch is still pending verification. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
 
 ## Development
 
@@ -63,7 +63,7 @@ npm run prepare:win11-runner -- --output "C:\\adhd-one-win11-runner" --node "C:\
 npm run e2e:win11 -- -SetupPath "C:\\path\\ADHD-One-Setup-0.2.0-beta.2-x64.exe" -EvidenceRoot "C:\\adhd-one-win11-runner\\evidence" -RepoRoot "C:\\adhd-one-win11-runner"
 ```
 
-The matrix installs and uninstalls once in each of four isolated path cases (`ascii`, `中文`, `中文 空格`, and a 280-character path). Each row runs the bounded qualification scenario instead of repeating the full 14-cycle suite. This path evidence remains local and unauthenticated until the trusted collector/signing chain is complete.
+The matrix installs and uninstalls once in each of four isolated path cases (`ascii`, `中文`, `中文 空格`, and a 280-character path). Each row runs the bounded qualification scenario instead of repeating the full 14-cycle suite. This path and CPU evidence remains local and unauthenticated until the signed digest-binding orchestrator is complete.
 
 The runtime is isolated under `runtime/`. Node downloads are checksum-verified. Exact dependency versions are recorded in both lockfiles.
 

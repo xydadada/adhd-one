@@ -7,6 +7,7 @@ import {
   collectExecutableProof,
   collectWin11HostProof,
   collectWindowsHostProof,
+  runWin11HostProofCli,
   WIN11_HOST_PROOF_ERRORS as ERROR,
   WIN11_HOST_PROOF_EXPECTED_EXE,
   WIN11_HOST_PROOF_POWERSHELL_SCRIPT,
@@ -106,6 +107,27 @@ describe('Windows 11 host and executable proof collector', () => {
     expect(run.mock.calls[0]?.[0]).toBe('powershell.exe');
     expect(run.mock.calls[0]?.[1]).toEqual(['-NoProfile', '-NonInteractive', '-Command', WIN11_HOST_PROOF_POWERSHELL_SCRIPT]);
     expect(run.mock.calls[0]?.[2]).toMatchObject({ windowsHide: true, timeout: 15_000 });
+  });
+
+  it('exposes a host-only CLI for the matrix and writes only normalized proof', async () => {
+    const write = vi.fn();
+    const run = vi.fn().mockResolvedValue({
+      stdout: JSON.stringify({
+        ProductName: 'Windows 11 Pro',
+        CurrentBuildNumber: 26100,
+        OSArchitecture: 'x64',
+        ProductType: 1,
+        ComputerName: 'Alice-PC'
+      })
+    });
+    await expect(runWin11HostProofCli(['--host-only'], { run, write })).resolves.toEqual({
+      os: 'Windows 11',
+      architecture: 'x64',
+      buildNumber: 26_100
+    });
+    expect(write).toHaveBeenCalledWith('{"os":"Windows 11","architecture":"x64","buildNumber":26100}\n');
+    expect(JSON.stringify(write.mock.calls)).not.toContain('Alice');
+    await expect(runWin11HostProofCli([], { run, write })).rejects.toMatchObject({ code: ERROR.INVALID_ARGUMENT });
   });
 
   it('accepts Get-ComputerInfo field names but never copies raw host output', async () => {

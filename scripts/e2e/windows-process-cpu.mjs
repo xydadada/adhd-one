@@ -19,18 +19,20 @@ export const WINDOWS_PROCESS_CPU_ERROR_CODES = Object.freeze({
   INVALID_LOGICAL_PROCESSORS: 'WINDOWS_PROCESS_CPU_INVALID_LOGICAL_PROCESSORS',
   INVALID_ELAPSED_TIME: 'WINDOWS_PROCESS_CPU_INVALID_ELAPSED_TIME',
   WINDOW_TOO_SHORT: 'WINDOWS_PROCESS_CPU_WINDOW_TOO_SHORT',
-  INVALID_SAMPLER: 'WINDOWS_PROCESS_CPU_INVALID_SAMPLER'
+  INVALID_SAMPLER: 'WINDOWS_PROCESS_CPU_INVALID_SAMPLER',
+  SNAPSHOT_FAILED: 'WINDOWS_PROCESS_CPU_SNAPSHOT_FAILED'
 });
 
 const POWERSHELL_PROCESS_SNAPSHOT = [
-  '$selfPid = $PID',
+  '$ErrorActionPreference = "Stop";',
+  '$selfPid = $PID;',
   'Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,UserModeTime,KernelModeTime',
-  '| Where-Object { $_.ProcessId -ne $selfPid }',
+  '| Where-Object { $_.ProcessId -gt 0 -and $_.ProcessId -ne $selfPid }',
   '| ForEach-Object { [PSCustomObject]@{',
-  'ProcessId = $_.ProcessId',
-  'ParentProcessId = $_.ParentProcessId',
-  'CreationDate = [string]$_.CreationDate',
-  'UserModeTime = [string]$_.UserModeTime',
+  'ProcessId = $_.ProcessId;',
+  'ParentProcessId = $_.ParentProcessId;',
+  'CreationDate = [string]$_.CreationDate;',
+  'UserModeTime = [string]$_.UserModeTime;',
   'KernelModeTime = [string]$_.KernelModeTime',
   '} }',
   '| ConvertTo-Json -Compress'
@@ -43,8 +45,8 @@ const POWERSHELL_PROCESS_SNAPSHOT_OPTIONS = Object.freeze({
 });
 
 export class WindowsProcessCpuError extends Error {
-  constructor(code, message = code) {
-    super(message);
+  constructor(code) {
+    super(code);
     this.name = 'WindowsProcessCpuError';
     this.code = code;
   }
@@ -327,8 +329,7 @@ export function calculateWindowsProcessCpu({
     totalCpuTimeDelta100ns: totalDelta100ns.toString(),
     elapsed100ns: elapsed.toString(),
     logicalProcessorCount: processors,
-    processCount: firstTree.length,
-    processIdentities: Object.freeze([...firstByIdentity.keys()].sort())
+    processCount: firstTree.length
   });
 }
 
@@ -356,11 +357,16 @@ export function parseWindowsProcessSnapshotJson(stdout) {
 /** Takes one Windows process snapshot; the command runner is injectable for tests. */
 export async function sampleWindowsProcessSnapshot({ run = execFileAsync } = {}) {
   if (typeof run !== 'function') fail(WINDOWS_PROCESS_CPU_ERROR_CODES.INVALID_SAMPLER, 'process snapshot runner must be a function');
-  const result = await run(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_PROCESS_SNAPSHOT],
-    POWERSHELL_PROCESS_SNAPSHOT_OPTIONS
-  );
+  let result;
+  try {
+    result = await run(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_PROCESS_SNAPSHOT],
+      POWERSHELL_PROCESS_SNAPSHOT_OPTIONS
+    );
+  } catch {
+    fail(WINDOWS_PROCESS_CPU_ERROR_CODES.SNAPSHOT_FAILED);
+  }
   return parseWindowsProcessSnapshotJson(result?.stdout ?? result);
 }
 
@@ -394,18 +400,28 @@ export async function measureWindowsProcessCpu({
   const processors = logicalProcessorCount ?? getLogicalProcessorCount();
   positiveLogicalProcessorCount(processors);
   const requiredElapsedNs = BigInt(intervalMs) * 1_000_000n;
-  const startedAtNs = monotonicNow();
-  if (typeof startedAtNs !== 'bigint') {
+  const firstStartedAtNs = monotonicNow();
+  if (typeof firstStartedAtNs !== 'bigint') {
     fail(WINDOWS_PROCESS_CPU_ERROR_CODES.INVALID_ELAPSED_TIME, 'monotonicNow must return nanoseconds as BigInt');
   }
   const firstSnapshot = await selectedSampler(rootPid);
+  const firstEndedAtNs = monotonicNow();
+  if (typeof firstEndedAtNs !== 'bigint' || firstEndedAtNs < firstStartedAtNs) {
+    fail(WINDOWS_PROCESS_CPU_ERROR_CODES.INVALID_ELAPSED_TIME);
+  }
   await wait(intervalMs);
+  const secondStartedAtNs = monotonicNow();
+  if (typeof secondStartedAtNs !== 'bigint' || secondStartedAtNs < firstEndedAtNs) {
+    fail(WINDOWS_PROCESS_CPU_ERROR_CODES.INVALID_ELAPSED_TIME);
+  }
   const secondSnapshot = await selectedSampler(rootPid);
-  const endedAtNs = monotonicNow();
-  if (typeof endedAtNs !== 'bigint') {
+  const secondEndedAtNs = monotonicNow();
+  if (typeof secondEndedAtNs !== 'bigint' || secondEndedAtNs < secondStartedAtNs) {
     fail(WINDOWS_PROCESS_CPU_ERROR_CODES.INVALID_ELAPSED_TIME, 'monotonicNow must return nanoseconds as BigInt');
   }
-  const actualElapsedNs = endedAtNs - startedAtNs;
+  const firstSampleAtNs = (firstStartedAtNs + firstEndedAtNs) / 2n;
+  const secondSampleAtNs = (secondStartedAtNs + secondEndedAtNs) / 2n;
+  const actualElapsedNs = secondSampleAtNs - firstSampleAtNs;
   if (actualElapsedNs < requiredElapsedNs) {
     fail(WINDOWS_PROCESS_CPU_ERROR_CODES.WINDOW_TOO_SHORT, 'actual sampling window is shorter than the requested interval');
   }

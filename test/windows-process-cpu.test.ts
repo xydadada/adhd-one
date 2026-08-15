@@ -72,11 +72,6 @@ describe('strict Windows process CPU measurement', () => {
     expect(result.averageCpuPercent).toBe(100);
     expect(result.totalCpuTimeDelta100ns).toBe('1200000000');
     expect(result.processCount).toBe(3);
-    expect(result.processIdentities).toEqual([
-      '[100,"root-created"]',
-      '[200,"child-created"]',
-      '[300,"grandchild-created"]'
-    ]);
   });
 
   it('normalizes CPU by the number of logical processors', () => {
@@ -108,6 +103,8 @@ describe('strict Windows process CPU measurement', () => {
     const wait = vi.fn().mockResolvedValue(undefined);
     const monotonicNow = vi.fn()
       .mockReturnValueOnce(0n)
+      .mockReturnValueOnce(0n)
+      .mockReturnValueOnce(60_000_000_000n)
       .mockReturnValueOnce(60_000_000_000n);
 
     const result = await measureWindowsProcessCpu({
@@ -129,6 +126,8 @@ describe('strict Windows process CPU measurement', () => {
       .mockResolvedValueOnce(snapshot(600_000_000n, 0n));
     const monotonicNow = vi.fn()
       .mockReturnValueOnce(10_000n)
+      .mockReturnValueOnce(10_000n)
+      .mockReturnValueOnce(120_000_010_000n)
       .mockReturnValueOnce(120_000_010_000n);
 
     const result = await measureWindowsProcessCpu({
@@ -156,6 +155,8 @@ describe('strict Windows process CPU measurement', () => {
         logicalProcessorCount: 1,
         monotonicNow: vi.fn()
           .mockReturnValueOnce(0n)
+          .mockReturnValueOnce(0n)
+          .mockReturnValueOnce(59_999_999_999n)
           .mockReturnValueOnce(59_999_999_999n)
       }),
       WINDOWS_PROCESS_CPU_ERROR_CODES.WINDOW_TOO_SHORT

@@ -68,6 +68,8 @@ function portableEvidence() {
     finalScopedProcessAuditPassed: true,
     workspaceWriteRequested: false,
     workspaceWriteVerified: false,
+    runtimeRollbackRequested: false,
+    runtimeRollbackVerified: false,
     cyclesRequested: 1,
     cyclesCompleted: 1,
     passed: true,
@@ -112,7 +114,19 @@ function portableEvidence() {
       stdoutBytes: 0,
       stderrBytes: 0,
       workspaceWriteVerified: false,
-      workspaceWrite: portableWorkspace()
+      workspaceWrite: portableWorkspace(),
+      runtimeRollbackVerified: false,
+      runtimeRollback: {
+        requested: false,
+        verified: false,
+        candidateSeeded: false,
+        bundledActive: false,
+        previousCandidateRecorded: false,
+        healthy: false,
+        candidateCleared: false,
+        rollbackMarkerRecorded: false,
+        brokenSlotAbsent: false
+      }
     }]
   };
 }

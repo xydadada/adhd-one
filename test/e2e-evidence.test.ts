@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import {
   cdpClosed,
@@ -9,6 +11,7 @@ import {
   shouldCopyPortableEntry,
   stableErrorCode,
   stableStageErrorCode,
+  verifyRuntimeRollbackState,
   waitForCdp,
   waitForProcessTree
 } from '../scripts/e2e/packaged.mjs';
@@ -228,5 +231,75 @@ describe('packaged E2E evidence safety', () => {
     });
     const serialized = JSON.stringify(value);
     expect(serialized).not.toMatch(/session-must-not-escape|nonce-must-not-escape|private|43123|fake-key-must-not-escape|runtimeUrl|sentinelPath/iu);
+  });
+
+  it('keeps runtime rollback evidence to booleans only', () => {
+    const value = sanitizeEvidence({
+      scenario: 'runtime-rollback',
+      runtimeRollbackVerified: true,
+      cycles: [{
+        cycle: 1,
+        scenario: 'runtime-rollback',
+        runtimeRollbackVerified: true,
+        runtimeRollback: {
+          verified: true,
+          candidateSeeded: true,
+          bundledActive: true,
+          previousCandidateRecorded: true,
+          healthy: true,
+          candidateCleared: true,
+          rollbackMarkerRecorded: true,
+          brokenSlotAbsent: true,
+          stateFile: 'C:\\Users\\Alice\\AppData\\runtime-state.json',
+          rawState: { token: 'secret-must-not-escape' }
+        }
+      }]
+    });
+
+    expect(value.runtimeRollbackRequested).toBe(true);
+    expect(value.runtimeRollbackVerified).toBe(true);
+    expect(value.cycles[0]?.runtimeRollback).toEqual({
+      requested: true,
+      verified: true,
+      candidateSeeded: true,
+      bundledActive: true,
+      previousCandidateRecorded: true,
+      healthy: true,
+      candidateCleared: true,
+      rollbackMarkerRecorded: true,
+      brokenSlotAbsent: true
+    });
+    expect(JSON.stringify(value)).not.toMatch(/Alice|AppData|stateFile|rawState|secret-must-not-escape/iu);
+  });
+
+  it('verifies persisted bundled rollback without exposing the state body', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-rollback-evidence-'));
+    try {
+      const runtimes = path.join(root, 'runtimes');
+      const brokenSlot = path.join(runtimes, 'slot-B');
+      await mkdir(runtimes);
+      await writeFile(path.join(runtimes, 'runtime-state.json'), JSON.stringify({
+        schemaVersion: 1,
+        active: 'bundled',
+        previous: 'B',
+        version: '0.1.0-rc.6',
+        healthy: true,
+        candidate: false,
+        rolledBackFrom: 'B'
+      }));
+      await expect(verifyRuntimeRollbackState(runtimes, brokenSlot, { slot: 'bundled' })).resolves.toEqual({
+        verified: true,
+        candidateSeeded: true,
+        bundledActive: true,
+        previousCandidateRecorded: true,
+        healthy: true,
+        candidateCleared: true,
+        rollbackMarkerRecorded: true,
+        brokenSlotAbsent: true
+      });
+      await expect(readFile(path.join(runtimes, 'runtime-state.json'), 'utf8')).resolves.toContain('rolledBackFrom');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

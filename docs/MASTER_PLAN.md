@@ -25,9 +25,9 @@
 
 当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 和 `v0.2.0-beta.2` 均为 prerelease；`v0.2.0-beta.2` 已于 2026-08-15 发布，11 个 Release API 上传资产可公开下载（GitHub 另提供自动生成的源码归档）；`v0.2.0` Stable 尚未发布。
 
-当前验证进度：**84%**（U1 +2、U2 +2、U3 +1）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。真实 GitHub 应用更新 feed、打包后 Runtime 回滚 E2E、Stable 发布、干净 Windows 11 与性能结果尚未计入。
+当前验证进度：**84%**（U1 +2、U2 +2、U3 +1）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。应用更新现为下载验证与重启安装两次独立确认；Runtime manifest 会拒绝无效或不兼容的 RPC 协议范围；候选观察期、健康时间和稳定状态跨应用重启持久化；坏候选槽会真实回滚而非反复静默降级。真实 Runtime 更新 smoke 已用发布 archive 完成 7-Zip、PE、closure、Session/tool-call 与 A/B 提交链路。打包后 Runtime 回滚场景已经实现并通过本地契约测试，待对应 commit 的 Windows Server 2025 最终 EXE 证据通过后计入 U3 最后 1 分并更新为 85%；真实 GitHub 应用更新 feed、Stable 发布、干净 Windows 11 与性能结果仍未计入。
 
-最新本地证据：`npm run check` 通过 27 个 test files（302 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 23 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。Runtime journal 的目录发布会对 Windows `EPERM`、`EBUSY`、`EACCES` 短暂共享冲突执行有界退避，并在每次重试前重新验证 reparse 安全边界；其他错误仍立即 fail closed。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
+最新本地证据：`npm run check` 通过 27 个 test files（304 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 23 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-update` 输出 `RUNTIME_UPDATE_SMOKE_OK slot=A version=0.1.0-rc.6`；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`。Runtime journal 的目录发布会对 Windows `EPERM`、`EBUSY`、`EACCES` 短暂共享冲突执行有界退避，并在每次重试前重新验证 reparse 安全边界；其他错误仍立即 fail closed。本批次 GitHub CI 证据将在对应 commit 推送后补记；既有完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
 
 2026-08-15 GitHub Windows Server 2025 run `31823906216`（commit `e0a0a28`）的 build 与真实 Portable E2E 通过，Setup 为 151,024,728 bytes（144.03 MiB）；NSIS 安装版的 launch、force-kill、workspace-write 和十次启动共 13 个循环中 12 个通过。唯一失败是十次启动的第一个循环：Runtime PID、应用范围进程树和最终审计均已清空，但 Electron 在接受退出后未结束并被 E2E 强制终止。代码审计定位的根因是 `app.exit()` 触发 `quit` 时过早取消 250ms hard-exit 后备。该 run 总结论为 failure，不计分；Q3 保持 0，直到修复后的新 SHA 在 `windows-2025` 上完整全绿。该 Server 结果也不得作为 Windows 11 或性能证据。
 
@@ -368,7 +368,7 @@ npm run check
 
 ### 阶段 D：打包后自动 E2E，78% → 89%
 
-GitHub `windows-2025` 构建一次并复用产物。workflow 对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write 和十次启动，共 13 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。commit `c6801bca6d18d7309861677de44d995e6d21102d` 的 run `31857910840` 已全部通过，本阶段完成；这不包含阶段 E 的 Windows 11 与性能资格。
+GitHub `windows-2025` 构建一次并复用产物。workflow 对最终 Portable ZIP 执行真实启动/退出/隔离检查，并对 Setup `/S` 隔离安装后的 EXE 固定执行 launch、force-kill、workspace-write、Runtime 坏候选回滚和十次启动，共 14 个循环；随后静默卸载并检查安装目录、应用范围进程、注册表和快捷方式残留。原 13 循环基线已由 commit `c6801bca6d18d7309861677de44d995e6d21102d` 的 run `31857910840` 全部通过；新增第 14 个回滚循环须在当前 commit 的 Windows CI 通过后才形成新基线。这不包含阶段 E 的 Windows 11 与性能资格。
 
 ```powershell
 npm run build:ci
@@ -412,7 +412,7 @@ RC 门槛：Setup ≤145 MiB，首次可交互 ≤15 秒，热启动 ready ≤8 
 
 ## 9. 打包、CI 与发布
 
-`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、安装版固定 13 循环、Portable ZIP 专项 E2E、证据上传和包体大小检查。commit `c6801bca6d18d7309861677de44d995e6d21102d` 已有一轮完整全绿的 hardened packaged E2E，但仍没有 Windows 11 或性能合格证据；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成安装版/Portable E2E、SBOM、attestation 和 Release。
+`quality.yml` 执行 TypeScript、Vitest、actionlint、dependency review、CodeQL、npm audit、npm audit signatures 和许可证闭包；`windows.yml` 配置了 Runtime 准备、一次性构建、Setup/Portable、安装版固定 14 循环、Portable ZIP 专项 E2E、证据上传和包体大小检查。原 13 循环基线已全绿；新增 Runtime 回滚循环待当前 commit 的 Windows CI 验证。仍没有 Windows 11 或性能合格证据；`release.yml` 从 tag 对应 commit 在同一可信 workflow 重新构建，再完成安装版/Portable E2E、SBOM、attestation 和 Release。
 
 所有 GitHub Actions 固定完整 commit SHA；Release workflow 增加 `concurrency` 和 `timeout-minutes`；不发布普通 CI 中未经当前 Release workflow 证明的二进制。缓存只包含 npm cache 和 SHA-256 已验证的 Node 官方压缩包，不缓存最终 Runtime closure、SBOM、证明或 Release 资产。
 

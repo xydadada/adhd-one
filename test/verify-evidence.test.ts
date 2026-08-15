@@ -49,9 +49,24 @@ function workspace(requested: boolean): JsonObject {
   };
 }
 
+function runtimeRollback(requested: boolean): JsonObject {
+  return {
+    requested,
+    verified: requested,
+    candidateSeeded: requested,
+    bundledActive: requested,
+    previousCandidateRecorded: requested,
+    healthy: requested,
+    candidateCleared: requested,
+    rollbackMarkerRecorded: requested,
+    brokenSlotAbsent: requested
+  };
+}
+
 function cycle(scenario: string, number: number, portableMode = false): JsonObject {
   const forceKill = scenario === 'force-kill';
   const write = scenario === 'workspace-write';
+  const rollback = scenario === 'runtime-rollback';
   return {
     cycle: number,
     scenario,
@@ -93,7 +108,9 @@ function cycle(scenario: string, number: number, portableMode = false): JsonObje
     stdoutBytes: 0,
     stderrBytes: 0,
     workspaceWriteVerified: write,
-    workspaceWrite: workspace(write)
+    workspaceWrite: workspace(write),
+    runtimeRollbackVerified: rollback,
+    runtimeRollback: runtimeRollback(rollback)
   };
 }
 
@@ -101,6 +118,7 @@ function evidence(scenario: string, cycles = 1, portableMode = false): JsonObjec
   const items = Array.from({ length: cycles }, (_, index) => cycle(scenario, index + 1, portableMode));
   const forceKill = scenario === 'force-kill';
   const write = scenario === 'workspace-write';
+  const rollback = scenario === 'runtime-rollback';
   return {
     schemaVersion: 1,
     tool: 'adhd-one-packaged-e2e',
@@ -118,6 +136,8 @@ function evidence(scenario: string, cycles = 1, portableMode = false): JsonObjec
     finalScopedProcessAuditPassed: true,
     workspaceWriteRequested: write,
     workspaceWriteVerified: write,
+    runtimeRollbackRequested: rollback,
+    runtimeRollbackVerified: rollback,
     cyclesRequested: cycles,
     cyclesCompleted: cycles,
     passed: true,
@@ -157,6 +177,7 @@ async function makeDirectory(): Promise<string> {
     'launch-1.json': evidence('launch'),
     'force-kill-1.json': evidence('force-kill'),
     'workspace-write-1.json': evidence('workspace-write'),
+    'runtime-rollback-1.json': evidence('runtime-rollback'),
     'launch-10.json': evidence('launch', 10),
     'installed-summary.json': summary()
   };
@@ -209,6 +230,12 @@ describe('downloaded Windows E2E evidence verifier', () => {
     (workspaceCycle.workspaceWrite as JsonObject).toolResult = false;
     await writeJsonObject(workspacePath, workspaceEvidence);
     expect((await verifyEvidenceDirectory(root)).errors).toContain('workspace-write-1.json:PACKAGED_EVIDENCE_INVALID');
+
+    const rollbackPath = path.join(root, 'runtime-rollback-1.json');
+    const rollbackEvidence = await readJsonObject(rollbackPath);
+    ((rollbackEvidence.cycles as JsonObject[])[0].runtimeRollback as JsonObject).bundledActive = false;
+    await writeJsonObject(rollbackPath, rollbackEvidence);
+    expect((await verifyEvidenceDirectory(root)).errors).toContain('runtime-rollback-1.json:PACKAGED_EVIDENCE_INVALID');
   });
 
   it('fails when installed cleanup leaves registry or shortcut residue', async () => {

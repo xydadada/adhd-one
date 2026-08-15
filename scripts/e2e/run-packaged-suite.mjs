@@ -31,6 +31,13 @@ export const PACKAGED_SUITE_STEPS = Object.freeze([
     failureCode: 'PACKAGED_SUITE_WORKSPACE_WRITE_FAILED'
   }),
   Object.freeze({
+    id: 'runtime-rollback-1',
+    scenario: 'runtime-rollback',
+    cycles: 1,
+    evidenceFile: 'runtime-rollback-1.json',
+    failureCode: 'PACKAGED_SUITE_RUNTIME_ROLLBACK_FAILED'
+  }),
+  Object.freeze({
     id: 'launch-10',
     scenario: 'launch',
     cycles: 10,
@@ -56,7 +63,7 @@ function usage() {
     'Usage:',
     '  node scripts/e2e/run-packaged-suite.mjs --exe <path-to-app-exe> --evidence-dir <directory>',
     '',
-    'Runs launch x1, force-kill x1, workspace-write x1, and launch x10 in that order.'
+    'Runs launch x1, force-kill x1, workspace-write x1, runtime-rollback x1, and launch x10 in that order.'
   ].join('\n');
 }
 
@@ -195,6 +202,7 @@ async function verifyEvidence(readFileImpl, outputPath, step, startedAt) {
         && (cycle.quitAccepted !== true || cycle.gracefulExitVerified !== true)) return false;
       if (step.scenario === 'force-kill' && cycle.forceKillVerified !== true) return false;
       if (step.scenario === 'workspace-write' && cycle.workspaceWriteVerified !== true) return false;
+      if (step.scenario === 'runtime-rollback' && cycle.runtimeRollbackVerified !== true) return false;
       return true;
     });
     const normalExitValid = step.scenario === 'force-kill'
@@ -224,6 +232,10 @@ async function verifyEvidence(readFileImpl, outputPath, step, startedAt) {
     if (step.scenario === 'workspace-write'
       && (evidence.workspaceWriteRequested !== true || evidence.workspaceWriteVerified !== true)) {
       throw new Error('invalid workspace-write evidence');
+    }
+    if (step.scenario === 'runtime-rollback'
+      && (evidence.runtimeRollbackRequested !== true || evidence.runtimeRollbackVerified !== true)) {
+      throw new Error('invalid runtime-rollback evidence');
     }
   } catch {
     throw suiteError('PACKAGED_SUITE_EVIDENCE_INVALID', 1);

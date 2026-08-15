@@ -20,7 +20,7 @@ const PROCESS_PATH_AUDIT_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 const TEMP_ROOT_PREFIX = 'adhd-one-packaged-e2e-';
 
-const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write']);
+const E2E_SCENARIOS = new Set(['launch', 'force-kill', 'workspace-write', 'runtime-rollback']);
 const EVIDENCE_CLEANUP_STATES = new Set(['pending', 'removed', 'failed', 'not-created']);
 const WORKSPACE_RPC_CLIENT_SOURCES = new Set(['not-run', 'packaged-asar', 'local-out', 'unavailable']);
 const WORKSPACE_PERMISSION_MODES = new Set(['not-run', 'workspace-write', 'danger-full-access', 'other', 'unknown']);
@@ -123,6 +123,22 @@ function safeScenario(value) {
   return E2E_SCENARIOS.has(value) ? value : 'launch';
 }
 
+function sanitizeRuntimeRollbackEvidence(value, scenario) {
+  const rollback = value ?? {};
+  const requested = scenario === 'runtime-rollback';
+  return {
+    requested,
+    verified: requested && rollback.verified === true,
+    candidateSeeded: requested && rollback.candidateSeeded === true,
+    bundledActive: requested && rollback.bundledActive === true,
+    previousCandidateRecorded: requested && rollback.previousCandidateRecorded === true,
+    healthy: requested && rollback.healthy === true,
+    candidateCleared: requested && rollback.candidateCleared === true,
+    rollbackMarkerRecorded: requested && rollback.rollbackMarkerRecorded === true,
+    brokenSlotAbsent: requested && rollback.brokenSlotAbsent === true
+  };
+}
+
 function safeEnum(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
 }
@@ -202,7 +218,9 @@ function sanitizeCycleEvidence(record, defaultScenario = 'launch') {
     stdoutBytes: nonNegativeInteger(cycle.stdoutBytes, 0),
     stderrBytes: nonNegativeInteger(cycle.stderrBytes, 0),
     workspaceWriteVerified: scenario === 'workspace-write' && cycle.workspaceWriteVerified === true,
-    workspaceWrite: sanitizeWorkspaceEvidence(cycle.workspaceWrite, scenario)
+    workspaceWrite: sanitizeWorkspaceEvidence(cycle.workspaceWrite, scenario),
+    runtimeRollbackVerified: scenario === 'runtime-rollback' && cycle.runtimeRollbackVerified === true,
+    runtimeRollback: sanitizeRuntimeRollbackEvidence(cycle.runtimeRollback, scenario)
   };
 }
 
@@ -226,6 +244,8 @@ export function sanitizeEvidence(evidence) {
     finalScopedProcessAuditPassed: evidence?.finalScopedProcessAuditPassed === true,
     workspaceWriteRequested: scenario === 'workspace-write',
     workspaceWriteVerified: scenario === 'workspace-write' && evidence?.workspaceWriteVerified === true,
+    runtimeRollbackRequested: scenario === 'runtime-rollback',
+    runtimeRollbackVerified: scenario === 'runtime-rollback' && evidence?.runtimeRollbackVerified === true,
     cyclesRequested: nonNegativeInteger(evidence?.cyclesRequested, cycles.length),
     cyclesCompleted: nonNegativeInteger(evidence?.cyclesCompleted, cycles.length),
     passed: evidence?.passed === true,
@@ -240,7 +260,7 @@ function countStreamBytes(stats, chunk) {
 function usage() {
   return [
     'Usage:',
-    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write>] [--require-portable]',
+    '  node scripts/e2e/packaged.mjs --exe <path-to-app-exe> --output <json-file-or-directory> [--cycles <n>] [--scenario <launch|force-kill|workspace-write|runtime-rollback>] [--require-portable]',
     '',
     'The executable must be the installed or extracted ADHD One application executable, not the NSIS installer.'
   ].join('\n');
@@ -281,7 +301,7 @@ function parseArgs(argv) {
       if (!Number.isSafeInteger(cycles) || cycles < 1 || cycles > 100) throw new Error('--cycles must be an integer from 1 to 100');
       values.cycles = cycles;
     } else {
-      if (!E2E_SCENARIOS.has(value)) throw new Error('--scenario must be launch, force-kill, or workspace-write');
+      if (!E2E_SCENARIOS.has(value)) throw new Error('--scenario must be launch, force-kill, workspace-write, or runtime-rollback');
       values.scenario = value;
     }
   }
@@ -1051,6 +1071,42 @@ async function prepareWorkspaceWriteDshHome(prepared, launchExecutable, portable
   ]);
 }
 
+async function prepareRuntimeRollback(prepared, portableMode) {
+  if (portableMode) throw new Error('RUNTIME_ROLLBACK_REQUIRES_INSTALLED');
+  const runtimes = path.join(prepared.localAppData, 'ADHD One', 'runtimes');
+  const brokenSlot = path.join(runtimes, 'slot-B');
+  if (!await pathIsAbsent(brokenSlot)) throw new Error('RUNTIME_ROLLBACK_SLOT_PRESENT');
+  await mkdir(runtimes, { recursive: true });
+  await writeFile(path.join(runtimes, 'runtime-state.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    active: 'B',
+    previous: 'bundled',
+    version: '999.0.0-e2e-broken',
+    healthy: false,
+    candidate: true
+  })}\n`, { encoding: 'utf8', flag: 'wx' });
+  return { runtimes, brokenSlot };
+}
+
+export async function verifyRuntimeRollbackState(runtimes, brokenSlot, runtimeSnapshot) {
+  let state;
+  try { state = JSON.parse(await readFile(path.join(runtimes, 'runtime-state.json'), 'utf8')); }
+  catch { return { verified: false }; }
+  if (!isRecord(state)) return { verified: false };
+  const evidence = {
+    verified: false,
+    candidateSeeded: true,
+    bundledActive: state.active === 'bundled' && runtimeSnapshot?.slot === 'bundled',
+    previousCandidateRecorded: state.previous === 'B',
+    healthy: state.healthy === true,
+    candidateCleared: state.candidate === false,
+    rollbackMarkerRecorded: state.rolledBackFrom === 'B',
+    brokenSlotAbsent: await pathIsAbsent(brokenSlot)
+  };
+  evidence.verified = Object.entries(evidence).every(([key, value]) => key === 'verified' || value === true);
+  return evidence;
+}
+
 async function runWorkspaceWrite(executable, prepared, snapshot, cycle, mock, apiKey, plan) {
   const outcome = {
     verified: false,
@@ -1212,6 +1268,7 @@ async function runWorkspaceWrite(executable, prepared, snapshot, cycle, mock, ap
 function cycleFailureCode(record) {
   if (record.scenario === 'force-kill' && record.forceKillRequested && !record.forceKillVerified) return 'APPLICATION_FORCE_KILL_FAILED';
   if (record.scenario === 'workspace-write' && !record.workspaceWriteVerified) return 'WORKSPACE_WRITE_FAILED';
+  if (record.scenario === 'runtime-rollback' && !record.runtimeRollbackVerified) return 'RUNTIME_ROLLBACK_FAILED';
   if (record.scenario !== 'force-kill' && !record.quitAccepted) return 'APP_QUIT_NOT_ACCEPTED';
   if (record.scenario !== 'force-kill' && !record.gracefulExitVerified) return 'APPLICATION_GRACEFUL_EXIT_FAILED';
   if (!record.finalScopedProcessAuditPassed) return 'PROCESS_PATH_AUDIT_FAILED';
@@ -1286,6 +1343,18 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
       sentinelFile: false,
       secondProviderTurn: false,
       finalNonce: false
+    },
+    runtimeRollbackVerified: false,
+    runtimeRollback: {
+      requested: scenario === 'runtime-rollback',
+      verified: false,
+      candidateSeeded: false,
+      bundledActive: false,
+      previousCandidateRecorded: false,
+      healthy: false,
+      candidateCleared: false,
+      rollbackMarkerRecorded: false,
+      brokenSlotAbsent: false
     }
   };
   let prepared;
@@ -1297,6 +1366,7 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
   let mock;
   let fakeApiKey;
   let workspacePlan;
+  let rollbackPlan;
   let launchExecutable = executable;
   const stdoutStats = { bytes: 0 };
   const stderrStats = { bytes: 0 };
@@ -1342,6 +1412,10 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     if (scenario === 'workspace-write') {
       await prepareWorkspaceWriteDshHome(prepared, launchExecutable, portableMode);
     }
+    if (scenario === 'runtime-rollback') {
+      rollbackPlan = await prepareRuntimeRollback(prepared, portableMode);
+      record.runtimeRollback.candidateSeeded = true;
+    }
     const remoteDebuggingPort = await findFreeLoopbackPort();
     record.cdpPort = remoteDebuggingPort;
     const environment = createTestEnvironment(prepared.root, prepared.appData, prepared.localAppData);
@@ -1384,6 +1458,12 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
     if (!record.isolationVerified) throw new Error('APPDATA_ISOLATION_FAILED');
     await requestHostDescribe(ready.snapshot.runtime.url, cycle);
     record.hostDescribeVerified = true;
+    if (scenario === 'runtime-rollback') {
+      const rollbackEvidence = await verifyRuntimeRollbackState(rollbackPlan.runtimes, rollbackPlan.brokenSlot, ready.snapshot.runtime);
+      record.runtimeRollback = { requested: true, ...rollbackEvidence };
+      record.runtimeRollbackVerified = rollbackEvidence.verified === true;
+      if (!record.runtimeRollbackVerified) throw new Error('RUNTIME_ROLLBACK_FAILED');
+    }
     if (scenario === 'workspace-write') {
       const workspaceOutcome = await runWorkspaceWrite(launchExecutable, prepared, ready.snapshot, cycle, mock, fakeApiKey, workspacePlan);
       const { errorCode, ...workspaceEvidence } = workspaceOutcome;
@@ -1486,7 +1566,8 @@ async function runCycle(executable, cycle, chromium, scenario = 'launch', requir
         && record.finalScopedProcessAuditPassed;
     record.passed = record.passed && record.launchVerified && record.exitVerified && record.cleanupVerified
       && record.finalScopedProcessAuditPassed
-      && (scenario !== 'workspace-write' || record.workspaceWriteVerified);
+      && (scenario !== 'workspace-write' || record.workspaceWriteVerified)
+      && (scenario !== 'runtime-rollback' || record.runtimeRollbackVerified);
     if (!record.passed) record.errorCode ??= cycleFailureCode(record);
   }
   return record;
@@ -1534,6 +1615,7 @@ async function main() {
   const finalScopedProcessAuditPassed = cycles.length === options.cycles
     && cycles.every(item => item.finalScopedProcessAuditPassed === true);
   const workspaceWriteVerified = options.scenario === 'workspace-write' && cycles.length === options.cycles && cycles.every(item => item.workspaceWriteVerified === true);
+  const runtimeRollbackVerified = options.scenario === 'runtime-rollback' && cycles.length === options.cycles && cycles.every(item => item.runtimeRollbackVerified === true);
   const evidence = sanitizeEvidence({
     schemaVersion: 1,
     tool: 'adhd-one-packaged-e2e',
@@ -1551,6 +1633,8 @@ async function main() {
     finalScopedProcessAuditPassed,
     workspaceWriteRequested: options.scenario === 'workspace-write',
     workspaceWriteVerified,
+    runtimeRollbackRequested: options.scenario === 'runtime-rollback',
+    runtimeRollbackVerified,
     cyclesRequested: options.cycles,
     cyclesCompleted: cycles.length,
     passed: cycles.length === options.cycles && cycles.every(item => item.passed && item.cleanup === 'removed'),

@@ -44,6 +44,7 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
 - Packaged E2E: the hardened Windows Server 2025 suite passed 13/13 installed cycles plus unpacked and final Portable ZIP checks. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
+- Next CI gate: the installed suite now adds a fourteenth isolated cycle that seeds a missing Runtime candidate slot and requires the final EXE to persist a rollback to the bundled Runtime. It is not counted as passed until the corresponding Windows run is green.
 - Current evidence: `npm run check` and CI passed 26 test files (284 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), plus JavaScript syntax, CodeQL, npm audit/signatures and license policy. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
 
 ## Development

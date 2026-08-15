@@ -55,6 +55,8 @@ function fakeSpawnFactory(
             forceKillVerified: scenario === 'force-kill',
             workspaceWriteRequested: scenario === 'workspace-write',
             workspaceWriteVerified: scenario === 'workspace-write',
+            runtimeRollbackRequested: scenario === 'runtime-rollback',
+            runtimeRollbackVerified: scenario === 'runtime-rollback',
             cyclesRequested: cycles,
             cyclesCompleted: cycles,
             cycles: Array.from({ length: cycles }, (_, index) => ({
@@ -74,7 +76,8 @@ function fakeSpawnFactory(
               runtimePidExited: true,
               remainingPids: [],
               forceKillVerified: scenario === 'force-kill',
-              workspaceWriteVerified: scenario === 'workspace-write'
+              workspaceWriteVerified: scenario === 'workspace-write',
+              runtimeRollbackVerified: scenario === 'runtime-rollback'
             }))
           };
           mutateEvidence?.(
@@ -103,7 +106,7 @@ describe('packaged suite runner', () => {
       .toThrow('PACKAGED_SUITE_INVALID_ARGUMENT');
   });
 
-  it('calls the four fixed scenarios in order with independent evidence files', async () => {
+  it('calls the five fixed scenarios in order with independent evidence files', async () => {
     const evidenceDir = await mkdtemp(path.join(os.tmpdir(), 'adhd-one-suite-test-'));
     temporaryRoots.push(evidenceDir);
     const exe = path.join(evidenceDir, 'ADHD One.exe');
@@ -116,7 +119,7 @@ describe('packaged suite runner', () => {
     });
 
     expect(result.steps.map(step => step.id)).toEqual(PACKAGED_SUITE_STEPS.map(step => step.id));
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     expect(calls.map(call => ({
       command: call.command,
       script: call.args[0],
@@ -128,6 +131,7 @@ describe('packaged suite runner', () => {
       { command: process.execPath, script: PACKAGED_SCRIPT_PATH, exe: path.resolve(exe), output: 'launch-1.json', scenario: 'launch', cycles: '1' },
       { command: process.execPath, script: PACKAGED_SCRIPT_PATH, exe: path.resolve(exe), output: 'force-kill-1.json', scenario: 'force-kill', cycles: '1' },
       { command: process.execPath, script: PACKAGED_SCRIPT_PATH, exe: path.resolve(exe), output: 'workspace-write-1.json', scenario: 'workspace-write', cycles: '1' },
+      { command: process.execPath, script: PACKAGED_SCRIPT_PATH, exe: path.resolve(exe), output: 'runtime-rollback-1.json', scenario: 'runtime-rollback', cycles: '1' },
       { command: process.execPath, script: PACKAGED_SCRIPT_PATH, exe: path.resolve(exe), output: 'launch-10.json', scenario: 'launch', cycles: '10' }
     ]);
     await expect(readFile(path.join(evidenceDir, 'workspace-write-1.json'), 'utf8')).resolves.toContain('workspace-write');
@@ -295,6 +299,6 @@ describe('packaged suite runner', () => {
       evidenceDir,
       spawnImpl: fakeSpawnFactory(calls, -1, mutate)
     })).resolves.toMatchObject({ steps: expect.any(Array) });
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
   });
 });

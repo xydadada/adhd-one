@@ -6,6 +6,7 @@ const PACKAGED_FILES = Object.freeze([
   Object.freeze({ name: 'launch-1.json', scenario: 'launch', cycles: 1 }),
   Object.freeze({ name: 'force-kill-1.json', scenario: 'force-kill', cycles: 1 }),
   Object.freeze({ name: 'workspace-write-1.json', scenario: 'workspace-write', cycles: 1 }),
+  Object.freeze({ name: 'runtime-rollback-1.json', scenario: 'runtime-rollback', cycles: 1 }),
   Object.freeze({ name: 'launch-10.json', scenario: 'launch', cycles: 10 })
 ]);
 const PORTABLE_EVIDENCE_EXPECTATION = Object.freeze({ scenario: 'launch', cycles: 1 });
@@ -21,6 +22,7 @@ const TOP_KEYS = new Set([
   'launchVerified', 'forceKillRequested', 'forceKillVerified', 'quitAccepted',
   'gracefulExitVerified', 'exitVerified', 'cleanupVerified',
   'finalScopedProcessAuditPassed', 'workspaceWriteRequested', 'workspaceWriteVerified',
+  'runtimeRollbackRequested', 'runtimeRollbackVerified',
   'cyclesRequested', 'cyclesCompleted', 'passed', 'cycles'
 ]);
 
@@ -34,7 +36,7 @@ const CYCLE_KEYS = new Set([
   'cleanupRootExisted', 'cleanupRootAbsent', 'cleanupVerified',
   'finalScopedProcessAuditPassed', 'finalScopedProcessAuditCount',
   'finalScopedProcessAuditPids', 'finalScopedProcessAuditKinds', 'errorCode', 'stdoutBytes', 'stderrBytes',
-  'workspaceWriteVerified', 'workspaceWrite'
+  'workspaceWriteVerified', 'workspaceWrite', 'runtimeRollbackVerified', 'runtimeRollback'
 ]);
 
 const WORKSPACE_KEYS = new Set([
@@ -42,6 +44,12 @@ const WORKSPACE_KEYS = new Set([
   'providerSequence', 'approvalRequested', 'sessionCreated', 'sessionArchived',
   'historyVerified', 'providerAuthVerified', 'powerShellCall', 'toolResult',
   'sentinelFile', 'secondProviderTurn', 'finalNonce'
+]);
+
+const RUNTIME_ROLLBACK_KEYS = new Set([
+  'requested', 'verified', 'candidateSeeded', 'bundledActive',
+  'previousCandidateRecorded', 'healthy', 'candidateCleared',
+  'rollbackMarkerRecorded', 'brokenSlotAbsent'
 ]);
 
 const SUMMARY_KEYS = new Set([
@@ -59,7 +67,8 @@ const CYCLE_BOOLEAN_KEYS = [
   'runtimePidExited', 'processTreeExited', 'quitAccepted', 'gracefulExitVerified',
   'exitVerified', 'forceKillRequested', 'forceKillVerified', 'forcedTermination',
   'cleanupRootExisted', 'cleanupRootAbsent', 'cleanupVerified',
-  'finalScopedProcessAuditPassed', 'workspaceWriteVerified'
+  'finalScopedProcessAuditPassed', 'workspaceWriteVerified',
+  'runtimeRollbackVerified'
 ];
 
 const POSITIVE_CYCLE_NUMBER_KEYS = [
@@ -263,7 +272,8 @@ function validPackagedEvidence(value, expected, expectedPortableMode = false) {
   const topBooleanKeys = [
     'portableMode', 'launchVerified', 'forceKillRequested', 'forceKillVerified',
     'quitAccepted', 'gracefulExitVerified', 'exitVerified', 'cleanupVerified',
-    'finalScopedProcessAuditPassed', 'workspaceWriteRequested', 'workspaceWriteVerified'
+    'finalScopedProcessAuditPassed', 'workspaceWriteRequested', 'workspaceWriteVerified',
+    'runtimeRollbackRequested', 'runtimeRollbackVerified'
   ];
   if (!isBooleanRecord(value, topBooleanKeys)
     || value.launchVerified !== true
@@ -273,9 +283,12 @@ function validPackagedEvidence(value, expected, expectedPortableMode = false) {
 
   const isForceKill = expected.scenario === 'force-kill';
   const isWorkspaceWrite = expected.scenario === 'workspace-write';
+  const isRuntimeRollback = expected.scenario === 'runtime-rollback';
   if (value.forceKillRequested !== isForceKill || value.forceKillVerified !== isForceKill
     || value.workspaceWriteRequested !== isWorkspaceWrite
-    || value.workspaceWriteVerified !== isWorkspaceWrite) return false;
+    || value.workspaceWriteVerified !== isWorkspaceWrite
+    || value.runtimeRollbackRequested !== isRuntimeRollback
+    || value.runtimeRollbackVerified !== isRuntimeRollback) return false;
   if (isForceKill) {
     if (value.quitAccepted !== false || value.gracefulExitVerified !== false) return false;
   } else if (value.quitAccepted !== true || value.gracefulExitVerified !== true) return false;
@@ -321,7 +334,15 @@ function validCycle(cycle, evidence, expected, index, expectedPortableMode = fal
     || cycle.forcedTermination !== false || cycle.exitCode !== 0 || cycle.exitSignal !== null) return false;
 
   if (!validWorkspaceEvidence(cycle.workspaceWrite, expected.scenario === 'workspace-write')) return false;
-  return cycle.workspaceWriteVerified === (expected.scenario === 'workspace-write');
+  if (cycle.workspaceWriteVerified !== (expected.scenario === 'workspace-write')) return false;
+  if (!validRuntimeRollbackEvidence(cycle.runtimeRollback, expected.scenario === 'runtime-rollback')) return false;
+  return cycle.runtimeRollbackVerified === (expected.scenario === 'runtime-rollback');
+}
+
+function validRuntimeRollbackEvidence(value, requested) {
+  if (!hasOnlyKeys(value, RUNTIME_ROLLBACK_KEYS)
+    || !isBooleanRecord(value, [...RUNTIME_ROLLBACK_KEYS])) return false;
+  return Object.values(value).every(actual => actual === requested);
 }
 
 function validWorkspaceEvidence(value, requested) {

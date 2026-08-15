@@ -36,6 +36,7 @@
     "license:closure:gate": "npm run license:closure && npm run license:closure:check",
     "build:ci": "npm run build:win",
     "audit:signatures": "npm audit signatures && npm audit signatures --prefix runtime",
+    "monitor:upstream": "node scripts/check-upstream-runtime.mjs",
     "package:setup:prepared": "npm run check:syntax && electron-builder --config build/setup.yml --win nsis --x64 --publish never && node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked && npm run verify:package-closure -- dist/win-unpacked --mode setup",
     "package:portable:prepared": "npm run check:syntax && electron-builder --config build/portable.yml --win zip --x64 --publish never && node scripts/generate-license-closure.mjs --check --package-root dist/win-unpacked && npm run verify:package-closure -- dist/win-unpacked --mode portable",
     "package:setup": "npm run build:setup",

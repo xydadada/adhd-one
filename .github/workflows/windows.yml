@@ -118,6 +118,8 @@ jobs:
           --scenario launch
           --cycles 1
           --require-portable
+      - name: Verify packaged Portable win-unpacked evidence
+        run: npm run verify:evidence -- --portable evidence/portable-win-unpacked-launch.json
       - name: Freeze build artifact names
         id: artifact-names
         shell: pwsh
@@ -215,24 +217,35 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $package = Get-Content -Raw package.json | ConvertFrom-Json
           $zip = Join-Path $PWD "dist/ADHD-One-Portable-$($package.version)-win-x64.zip"
-          $portableRoot = Join-Path $env:RUNNER_TEMP "adhd-one-portable-$([guid]::NewGuid().ToString('N'))"
-          New-Item -ItemType Directory -Path $portableRoot | Out-Null
-          Expand-Archive -LiteralPath $zip -DestinationPath $portableRoot
-          $executables = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File -Filter 'ADHD One.exe')
-          if ($executables.Count -ne 1) {
-            throw "Expected exactly one portable ADHD One.exe, found $($executables.Count)"
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd([IO.Path]::DirectorySeparatorChar)
+          $portableRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp "adhd-one-portable-$([guid]::NewGuid().ToString('N'))"))
+          if (-not $portableRoot.StartsWith("$runnerTemp$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Portable extraction path escaped RUNNER_TEMP'
           }
-          node scripts/e2e/packaged.mjs `
-            --exe $executables[0].FullName `
-            --output evidence/portable-launch.json `
-            --scenario launch `
-            --cycles 1 `
-            --require-portable
-          if ($LASTEXITCODE -ne 0) { throw "Portable launch E2E failed with exit code $LASTEXITCODE" }
-          $evidence = Get-Content -Raw evidence/portable-launch.json | ConvertFrom-Json
-          if ($evidence.portableMode -isnot [bool] -or $evidence.portableMode -ne $true) {
-            throw 'Portable launch evidence did not prove portableMode=true'
+          try {
+            New-Item -ItemType Directory -Path $portableRoot | Out-Null
+            Expand-Archive -LiteralPath $zip -DestinationPath $portableRoot
+            $executables = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File -Filter 'ADHD One.exe')
+            if ($executables.Count -ne 1) {
+              throw "Expected exactly one portable ADHD One.exe, found $($executables.Count)"
+            }
+            node scripts/e2e/packaged.mjs `
+              --exe $executables[0].FullName `
+              --output evidence/portable-launch.json `
+              --scenario launch `
+              --cycles 1 `
+              --require-portable
+            if ($LASTEXITCODE -ne 0) { throw "Portable launch E2E failed with exit code $LASTEXITCODE" }
+          } finally {
+            if (Test-Path -LiteralPath $portableRoot) {
+              Remove-Item -LiteralPath $portableRoot -Recurse -Force
+            }
           }
+          if (Test-Path -LiteralPath $portableRoot) {
+            throw 'Portable extraction directory cleanup failed'
+          }
+      - name: Verify Portable ZIP evidence
+        run: npm run verify:evidence -- --portable evidence/portable-launch.json
       - name: Upload Portable evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -240,7 +253,7 @@ jobs:
           name: adhd-one-portable-evidence-${{ github.sha }}-${{ github.run_attempt }}
           path: evidence/portable-launch.json
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
   test-and-package:
     if: always()

@@ -22,24 +22,39 @@ describe('Windows verification workflow', () => {
     expect(workflow).toContain('adhd-one-installed-evidence-${{ github.sha }}-${{ github.run_attempt }}');
     expect(workflow).toContain('adhd-one-portable-evidence-${{ github.sha }}-${{ github.run_attempt }}');
     expect(workflow).toContain('--require-portable');
-    expect(workflow).toContain('portableMode=true');
     expect(workflow).toContain('Packaged Portable win-unpacked launch smoke');
     expect(workflow).toContain('--output evidence/portable-win-unpacked-launch.json');
     expect(workflow).not.toContain('evidence/win-unpacked-launch.json');
   });
 
-  it('verifies installed evidence before upload without validating portable evidence', async () => {
+  it('verifies installed and both Portable evidence files before upload', async () => {
     const workflow = await readFile(workflowPath, 'utf8');
     const installedSuite = workflow.indexOf('      - name: NSIS installed E2E suite and uninstall residue check');
     const verifier = workflow.indexOf('      - name: Verify installed E2E evidence');
     const upload = workflow.indexOf('      - name: Upload installed evidence');
     const portableJob = workflow.slice(workflow.indexOf('  portable-e2e:'));
+    const unpackedVerifier = workflow.indexOf('      - name: Verify packaged Portable win-unpacked evidence');
+    const portableVerifier = portableJob.indexOf('      - name: Verify Portable ZIP evidence');
+    const portableUpload = portableJob.indexOf('      - name: Upload Portable evidence');
 
     expect(installedSuite).toBeGreaterThanOrEqual(0);
     expect(verifier).toBeGreaterThan(installedSuite);
     expect(upload).toBeGreaterThan(verifier);
     expect(workflow.match(/npm run verify:evidence -- evidence\/installed/gu)).toHaveLength(1);
-    expect(portableJob).not.toContain('verify:evidence');
+    expect(unpackedVerifier).toBeGreaterThan(workflow.indexOf('      - name: Packaged Portable win-unpacked launch smoke'));
+    expect(portableVerifier).toBeGreaterThanOrEqual(0);
+    expect(portableUpload).toBeGreaterThan(portableVerifier);
+    expect(workflow.match(/npm run verify:evidence -- --portable evidence\/portable-(?:win-unpacked-launch|launch)\.json/gu)).toHaveLength(2);
+    expect(portableJob).toContain('if-no-files-found: error');
+  });
+
+  it('cleans the bounded Portable ZIP extraction directory in a finally block', async () => {
+    const workflow = await readFile(workflowPath, 'utf8');
+    const portableJob = workflow.slice(workflow.indexOf('  portable-e2e:'));
+    expect(portableJob).toContain('[IO.Path]::GetFullPath($env:RUNNER_TEMP)');
+    expect(portableJob).toContain("throw 'Portable extraction path escaped RUNNER_TEMP'");
+    expect(portableJob).toMatch(/try \{[\s\S]+\} finally \{[\s\S]+Remove-Item -LiteralPath \$portableRoot -Recurse -Force/u);
+    expect(portableJob).toContain("throw 'Portable extraction directory cleanup failed'");
   });
 
   it('binds latest.yml installer metadata to the exact Setup file', async () => {

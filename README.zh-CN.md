@@ -10,7 +10,7 @@
 | Windows 11 x64 | 目标平台；干净 Windows 11 验证尚未完成 |
 | Windows Server 2025 CI | run `31857910840` 的 hardened build、安装版 E2E 和 Portable ZIP E2E 已通过；不能作为 Windows 11 证据 |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
-| 发布状态 | 正在准备 `v0.2.0-beta.2` 预发布 |
+| 发布状态 | 已发布 [`v0.2.0-beta.2`](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2) 预发布版 |
 | 代码签名 | Windows 产物未签名；会触发 SmartScreen 提示 |
 
 统一的实现范围、进度和发布门槛见 [ADHD One v0.2.0 统一主计划](docs/MASTER_PLAN.md)。
@@ -30,7 +30,7 @@
 
 ## 下载
 
-- 已准备的预发布版 `v0.2.0-beta.2`（[发布页](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2)）：[ADHD-One-Setup-0.2.0-beta.2-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Setup-0.2.0-beta.2-x64.exe)、[ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip) 和 [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt)。这些链接将在 tag/Release 发布后生效。
+- 已发布的预发布版 `v0.2.0-beta.2`（[发布页](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2)）：[ADHD-One-Setup-0.2.0-beta.2-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Setup-0.2.0-beta.2-x64.exe)、[ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip) 和 [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt)。
 
 `beta.2` 由 Release tag 和完整的 `0.2.0-beta.2` 文件名标识。本版本是 prerelease，不能按 `v0.2.0` Stable 说明。
 
@@ -49,7 +49,7 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 - Windows 11 x64：尚未完成干净 Windows 11 环境验证；Server 2025 CI 结果不能证明 Windows 11 兼容性。
 - 性能：尚未形成性能合格证据；包体大小检查不等于性能验证。
 - Packaged E2E：Windows Server 2025 hardened 套件已通过安装版 13/13 循环，以及 unpacked 和最终 Portable ZIP 检查。所有已验证退出均清空 Runtime 与应用进程树；workspace 证据确认使用包内 ASAR RPC、两轮 Provider、PowerShell 执行和 Session 归档。
-- 当前证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），JavaScript 语法、CodeQL、npm audit/signatures 和许可证策略也通过。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
+- 当前证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），JavaScript 语法、CodeQL、npm audit/signatures 和许可证策略也通过。已发布的 Setup 资产为 151,012,608 bytes（144.02 MiB），低于 145 MiB 门槛。这些结果仍不代表 Windows 11、Stable 或性能合格。
 
 ## 本地开发
 

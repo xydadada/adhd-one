@@ -23,9 +23,9 @@
 
 发布门槛：`v0.2.0-beta.2` 至少 78%，`v0.2.0-rc.1` 至少 94%，`v0.2.0` Stable 必须 100%。
 
-当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 是 prerelease；`v0.2.0-beta.2` 正在准备但尚未发布；`v0.2.0` Stable 尚未发布。当前工作树 `package.json` 的版本为 `0.2.0-beta.2`，不代表已有同名 tag、Release 或 `v0.2.0` Stable 资产。
+当前发布状态：最新 Stable 是 `v0.1.0`；`v0.2.0-beta.1` 和 `v0.2.0-beta.2` 均为 prerelease；`v0.2.0-beta.2` 已于 2026-08-15 发布，11 个 Release API 上传资产可公开下载（GitHub 另提供自动生成的源码归档）；`v0.2.0` Stable 尚未发布。
 
-当前验证进度：**79%**（Q3 打包后自动 E2E +5）。`v0.2.0-beta.2` 的 78% 工程门槛已达到，但 tag/Release 尚未创建；最终文档提交仍必须在同一 SHA 上再次通过 Quality 与 Windows verification 后才允许打 tag。已计入 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、Runtime smoke、Fuse，以及 Windows Server 2025 上的 build、安装版 13-cycle、真实 PowerShell tool-call、十次启动、卸载残留和 Portable ZIP E2E。Stable 发布、干净 Windows 11 与性能结果尚未计入。
+当前验证进度：**79%**（Q3 打包后自动 E2E +5）。`v0.2.0-beta.2` 的 78% 工程门槛已达到并已发布；tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`。已计入 TypeScript/Vitest、A/B journal 崩溃恢复、严格 archive 与实际解压树校验、Runtime smoke、Fuse，以及 Windows Server 2025 上的 build、安装版 13-cycle、真实 PowerShell tool-call、十次启动、卸载残留和 Portable ZIP E2E。Stable 发布、干净 Windows 11 与性能结果尚未计入。
 
 最新证据：`npm run check` 与 CI 通过 26 个 test files（284 个通过，1 个 Windows 8.3 alias 回归因测试卷没有独立短路径而跳过），`npm run check:syntax` 覆盖 21 个直接执行或打包的 JS-family 文件；`npm run smoke:runtime-archive` 输出 `RUNTIME_ARCHIVE_OK node=v24.18.0 dsh=0.1.0-rc.6`；此前 `npm run smoke:runtime-staging` 输出 `RUNTIME_STAGING_OK slot=A version=0.1.0-rc.6`。完整 Windows Server 2025 packaged suite 已通过，但这些证据仍不等同于 Windows 11、性能或 Stable 发布证据。
 
@@ -36,6 +36,8 @@
 随后 run `31828488370`（commit `03d5d2b`）通过 Quality、build、Fuse、精确 Windows 资产校验和 Portable E2E。安装版首个 launch 达到 ready、退出码为 0，Runtime 与已知进程树均清空，但五秒最终路径审计仍发现 1 个新进程；清理阶段又遇到 NSIS key 在枚举后被删除的注册表竞态，导致 summary 未落盘。该 run 仍为 failure、Q3 仍为 0；当前修复把 Electron hard-exit 后备从 250ms 调整为 1 秒，并只忽略已经实际消失的 registry key。
 
 2026-08-15 commit `c6801bca6d18d7309861677de44d995e6d21102d`（attempt 1）的 Quality run `31857910832` 与 Windows Server 2025 run `31857910840` 全绿。`quality`、`codeql`、`build-windows`、`portable-e2e`、`installed-e2e` 与 `test-and-package` 均为 success；安装版 launch、force-kill、workspace-write 和十次启动共 13/13 循环通过，卸载后安装目录、应用范围进程、注册表和快捷方式均清理。unpacked 与最终 Portable ZIP evidence 均通过严格 verifier；workspace-write 证明 `packaged-asar` RPC、`workspace-write` 权限、mock 鉴权、PowerShell tool-call、工具结果、第二轮 Provider、最终 nonce 和 Session 归档。Setup 为 151,012,081 bytes（144.02 MiB），低于 145 MiB 门槛。Q3 因此取得 5 分；该 Server 结果仍不得作为 Windows 11 或性能证据。
+
+`v0.2.0-beta.2` tag 的 release run `31859638726` 已完成构建、E2E、SBOM、摘要和 attestation，但原 workflow 在 draft 阶段错误地通过 tag endpoint 回读不可见的草稿，导致最终 job 标红；资产经 release ID 严格核对后发布。main commit `0e85253da21067e680ef6178f735d5736e2fcdaa` 已改为按 release ID 回读，Quality run `31860658337` 与 Windows verification run `31860658340` 全绿；该 Release workflow 修复仍须由下一次 tag 完成端到端验证后才能记为发布门禁证据。
 
 | 编号 | 工作项 | 总分 | 已得 |
 |---|---|---:|---:|
@@ -359,7 +361,7 @@ npm run check
 | `npm run test:renderer` | renderer 专项测试 |
 | `npm run smoke:doctor` | Doctor 真实 smoke |
 
-达到 78% 且核心集成测试、一次安装 smoke、一次真实 mock tool-call 和一次无残留退出验证通过后，才发布 `v0.2.0-beta.2`。
+上述门槛已经满足，`v0.2.0-beta.2` 已发布；后续 RC/Stable 不得回退这些验证门槛。
 
 ### 阶段 D：打包后自动 E2E，78% → 89%
 
@@ -371,12 +373,7 @@ npm run e2e:packaged -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evi
 npm run e2e:packaged -- --exe ".\dist\win-unpacked\ADHD One.exe" --output ".\evidence\packaged-10-cycles.json" --cycles 10
 ```
 
-后续阶段待新增（当前不可执行）：
-
-| npm 命令 | 用途 |
-|---|---|
-| `npm run e2e:installed` | Setup 安装后 E2E |
-| `npm run e2e:portable` | Portable 专项 E2E |
+安装版与 Portable 专项 E2E 已由 `.github/workflows/windows.yml` 和 `.github/workflows/release.yml` 直接调用 `scripts/e2e/installed.ps1`、`scripts/e2e/packaged.mjs` 与 `scripts/verify-evidence.mjs`。本阶段不再维护一套功能重复的包装脚本；本地复现应使用 workflow 中记录的同一参数。
 
 失败时保留脱敏日志、Playwright trace、Runtime snapshot、进程树、安装路径清单、性能和包体报告。
 

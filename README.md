@@ -11,7 +11,7 @@
 | Windows Server 2025 CI | Hardened build, installed E2E and Portable ZIP E2E passed on run `31857910840`; this is not Windows 11 evidence |
 | DeepSeek Harness | `@deepseek-ai/dsh 0.1.0-rc.6` |
 | Telemetry | Disabled by default |
-| Release status | `v0.2.0-beta.2` prerelease is being prepared |
+| Release status | [`v0.2.0-beta.2`](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2) prerelease published |
 | Code signing | Unsigned artifacts; SmartScreen warning applies |
 
 The single source of truth for implementation scope, progress and release gates is the [ADHD One v0.2.0 master plan](docs/MASTER_PLAN.md).
@@ -27,7 +27,7 @@ The single source of truth for implementation scope, progress and release gates 
 
 ## Downloads
 
-- Prepared prerelease `v0.2.0-beta.2` ([release page](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2)): [ADHD-One-Setup-0.2.0-beta.2-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Setup-0.2.0-beta.2-x64.exe), [ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip), and [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt). These links become active after the tag/Release is published.
+- Published prerelease `v0.2.0-beta.2` ([release page](https://github.com/xydadada/adhd-one/releases/tag/v0.2.0-beta.2)): [ADHD-One-Setup-0.2.0-beta.2-x64.exe](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Setup-0.2.0-beta.2-x64.exe), [ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip), and [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt).
 
 The `beta.2` tag and full `0.2.0-beta.2` filenames identify the prerelease. The Windows artifacts are unsigned and SmartScreen may show “Unknown publisher”. Compare the downloaded file with `SHA256SUMS.txt` or verify the installer before running it:
 
@@ -44,7 +44,7 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 - Windows 11 x64: not yet verified in a clean Windows 11 environment; Server 2025 CI does not establish Windows 11 compatibility.
 - Performance: no performance qualification has been recorded; package-size checks must not be read as performance evidence.
 - Packaged E2E: the hardened Windows Server 2025 suite passed 13/13 installed cycles plus unpacked and final Portable ZIP checks. Every verified exit cleared the Runtime and application process tree; the workspace evidence confirms packaged-ASAR RPC, two Provider turns, PowerShell execution and session archival.
-- Current evidence: `npm run check` and CI passed 26 test files (284 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), plus JavaScript syntax, CodeQL, npm audit/signatures and license policy. Setup is 151,012,081 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
+- Current evidence: `npm run check` and CI passed 26 test files (284 passed, 1 Windows 8.3-alias regression skipped because the tested volume exposed no distinct alias), plus JavaScript syntax, CodeQL, npm audit/signatures and license policy. The published Setup asset is 151,012,608 bytes (144.02 MiB), below the 145 MiB gate. This does not establish Windows 11, Stable or performance qualification.
 
 ## Development
 

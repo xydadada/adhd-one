@@ -12,7 +12,7 @@
 - [ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip)
 - [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt)
 
-以上链接在 tag/Release 发布后提供对应资产。
+以上资产已随公开的 `v0.2.0-beta.2` Release 发布。
 
 **未签名 Windows 构建：** SmartScreen 可能显示“未知发布者”。运行前请对照 `SHA256SUMS.txt`，或执行：
 
@@ -34,7 +34,7 @@ Downloads:
 - [ADHD-One-Portable-0.2.0-beta.2-win-x64.zip](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/ADHD-One-Portable-0.2.0-beta.2-win-x64.zip)
 - [SHA256SUMS.txt](https://github.com/xydadada/adhd-one/releases/download/v0.2.0-beta.2/SHA256SUMS.txt)
 
-These links provide the corresponding assets after the tag/Release is published.
+These assets are available from the published `v0.2.0-beta.2` Release.
 
 **Unsigned Windows build:** SmartScreen may display “Unknown publisher”. Compare the download with `SHA256SUMS.txt` or verify the GitHub Artifact Attestation before running the installer.
 

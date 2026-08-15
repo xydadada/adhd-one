@@ -1,0 +1,14 @@
+* @xydadada
+
+# Security- and release-sensitive surfaces are listed explicitly so GitHub
+# requests owner review even if broader ownership changes later.
+/.github/workflows/ @xydadada
+/src/preload.cjs @xydadada
+/src/secure-bridge.ts @xydadada
+/src/security.ts @xydadada
+/src/update-manager.ts @xydadada
+/src/windows-platform.ts @xydadada
+/package.json @xydadada
+/package-lock.json @xydadada
+/runtime/package-lock.json @xydadada
+

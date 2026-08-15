@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and setup help / 使用与配置问题
+    url: https://github.com/xydadada/adhd-one/discussions/categories/q-a
+    about: Ask questions without turning support requests into bug reports.
+  - name: Private security report / 私密安全报告
+    url: https://github.com/xydadada/adhd-one/security/advisories/new
+    about: Never disclose a vulnerability, credential, or private workspace data publicly.
+  - name: DeepSeek Harness upstream
+    url: https://github.com/deepseek-ai/DeepSeek-Harness/issues
+    about: Report defects in the official CLI, Web UI, or upstream provider protocol here.
+

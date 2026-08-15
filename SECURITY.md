@@ -1,6 +1,19 @@
 # Security
 
-ADHD One supports Windows 11 x64. Please report vulnerabilities privately through GitHub Security Advisories instead of a public issue.
+ADHD One targets Windows 11 x64. Please report vulnerabilities privately through [GitHub Security Advisories](https://github.com/xydadada/adhd-one/security/advisories/new) instead of a public issue.
+
+## Supported versions
+
+| Version | Security support |
+|---|---|
+| Current `main` and latest published v0.2 prerelease | Best-effort fixes in the next release |
+| v0.1.x and superseded prereleases | Unsupported; upgrade before reporting |
+
+This is a volunteer project with no response-time SLA. Maintainers will acknowledge actionable private reports on a best-effort basis, coordinate disclosure with the reporter, and publish an advisory after a fix is available. Please do not disclose the issue publicly before that point.
+
+Include the affected version, impact, minimal reproduction, and a proposed mitigation if known. Never submit a real credential, private workspace content, complete session transcript, or unnecessary personal path. Use a disposable test credential only when a proof requires one.
+
+## Security model and boundaries
 
 The application does not collect telemetry. Provider credentials remain owned by DeepSeek Harness and must not be included in bug reports. Provider Doctor output is designed to be shareable, but users should still review it before posting.
 

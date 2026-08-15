@@ -17,7 +17,7 @@
 **未签名 Windows 构建：** SmartScreen 可能显示“未知发布者”。运行前请对照 `SHA256SUMS.txt`，或执行：
 
 ```powershell
-gh attestation verify ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one
+gh attestation verify ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one --predicate-type https://in-toto.io/attestation/release/v0.1 --signer-workflow xydadada/adhd-one/.github/workflows/release.yml --source-ref refs/tags/v0.2.0-beta.2
 ```
 
 兼容性：Windows 11 x64 是目标平台，但尚未在干净 Windows 11 环境验证。tag `v0.2.0-beta.2` 指向 commit `0b47082933c7c8165f45b1a8e9ba4ce677a8a720`；release run `31859638726` 完成构建、打包检查、SBOM、摘要和 attestation，但最终 job 因当时错误回读不可见 draft 而标红，资产随后经 release ID 核对后发布。这些历史结果不能证明当前 main、Windows 11 兼容性或性能合格。本版本是 prerelease，不能按 `v0.2.0` Stable 说明。此项目与 DeepSeek 无隶属或背书关系。

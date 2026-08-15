@@ -38,7 +38,7 @@ Windows 产物未签名，SmartScreen 可能显示“未知发布者”。运行
 
 ```powershell
 Get-FileHash .\ADHD-One-Setup-0.2.0-beta.2-x64.exe -Algorithm SHA256
-gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one
+gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one --predicate-type https://in-toto.io/attestation/release/v0.1 --signer-workflow xydadada/adhd-one/.github/workflows/release.yml --source-ref refs/tags/v0.2.0-beta.2
 ```
 
 首次使用 DSH 时可能需要配置模型服务商或 API Key。密钥由内置的官方 DSH 运行时管理；ADHD One 的诊断只读取“是否已配置”和来源类型，不读取、显示或写入完整密钥。
@@ -55,14 +55,15 @@ gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd
 需要 Node.js 24+ 和 npm：
 
 ```powershell
-npm install
+npm ci
+npm run check
 npm start
 ```
 
-检查并构建 Windows 安装包：
+Smoke 与 Windows 打包会额外下载/准备内置 Runtime，因此单独执行：
 
 ```powershell
-npm run check
+npm run smoke
 npm run build:win
 ```
 

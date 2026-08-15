@@ -33,7 +33,7 @@ The `beta.2` tag and full `0.2.0-beta.2` filenames identify the prerelease. The 
 
 ```powershell
 Get-FileHash .\ADHD-One-Setup-0.2.0-beta.2-x64.exe -Algorithm SHA256
-gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one
+gh attestation verify .\ADHD-One-Setup-0.2.0-beta.2-x64.exe --repo xydadada/adhd-one --predicate-type https://in-toto.io/attestation/release/v0.1 --signer-workflow xydadada/adhd-one/.github/workflows/release.yml --source-ref refs/tags/v0.2.0-beta.2
 ```
 
 On first launch, select a workspace. ADHD One never defaults to granting the whole Documents folder.
@@ -50,6 +50,12 @@ On first launch, select a workspace. ADHD One never defaults to granting the who
 ```powershell
 npm ci
 npm run check
+npm start
+```
+
+Packaging and smoke commands are separate because they download/prepare the bundled Runtime:
+
+```powershell
 npm run smoke
 npm run build:win
 ```

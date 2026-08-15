@@ -1,0 +1,83 @@
+name: Bug report / 错误报告
+description: Report a reproducible ADHD One desktop-shell problem.
+title: "[Bug]: "
+labels: ["bug", "needs-reproduction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ADHD One is unofficial. Do not include API keys, Authorization headers, private workspace content, full user paths, or unredacted logs. Security issues must use private vulnerability reporting.
+  - type: checkboxes
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched existing issues and Discussions.
+          required: true
+        - label: I removed credentials, private paths, workspace content, and session content.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: ADHD One version
+      options:
+        - v0.2.0-beta.2
+        - Current main/source build
+        - v0.2.0-beta.1 or older
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: Distribution
+      options:
+        - Setup installer
+        - Portable ZIP
+        - Source/development
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows edition and build
+      placeholder: "Windows 11 24H2, OS build …"
+    validations:
+      required: true
+  - type: input
+    id: dsh
+    attributes:
+      label: DSH Runtime version
+      placeholder: "0.1.0-rc.6"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observable desktop-shell behavior without secrets or private data.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostic evidence
+      description: Prefer the Provider Doctor's redacted report. Review it before posting. Do not paste raw environment dumps or session transcripts.
+

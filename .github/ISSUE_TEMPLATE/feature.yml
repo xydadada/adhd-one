@@ -1,0 +1,38 @@
+name: Feature request / 功能建议
+description: Propose a focused improvement to the unofficial desktop shell.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Scope checks
+      options:
+        - label: I searched existing issues and Discussions.
+          required: true
+        - label: This belongs in the desktop shell rather than the official Harness.
+          required: true
+        - label: This request does not depend on impersonating DeepSeek or replacing the upstream DSH Web UI.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the user need before proposing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reuse
+    attributes:
+      label: Existing tools or projects to reuse
+      description: Link official APIs, licensed libraries, or compatible community implementations if known.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+

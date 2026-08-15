@@ -118,18 +118,6 @@ describe('QuitCoordinator', () => {
     expect(fixture.hardExit).not.toHaveBeenCalled();
   });
 
-  it('does not let the hard-exit fallback keep Electron alive', async () => {
-    const unref = vi.fn();
-    const timer = { unref } as unknown as ReturnType<typeof setTimeout>;
-    const schedule = vi.fn(() => timer);
-    const fixture = createFixture({ setTimeout: schedule });
-
-    await fixture.coordinator.quit();
-
-    expect(schedule).toHaveBeenCalledTimes(2);
-    expect(unref).toHaveBeenCalledOnce();
-  });
-
   it('keeps the fallback armed because Electron quit does not prove process exit', () => {
     const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 

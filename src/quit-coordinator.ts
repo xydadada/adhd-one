@@ -122,9 +122,6 @@ export class QuitCoordinator {
       this.hardExitCalled = true;
       try { this.dependencies.hardExit(exitCode); } catch { /* last-resort attempt is complete */ }
     }, this.hardExitDelayMs);
-    // A last-resort timer must not itself keep Electron's event loop alive.
-    // If another handle genuinely stalls shutdown, the callback can still run.
-    this.fallbackTimer.unref?.();
   }
 }
 

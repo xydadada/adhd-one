@@ -112,8 +112,8 @@ describe('packaged E2E evidence safety', () => {
 
   it('retries a transiently empty Windows process snapshot until the runtime is linked to the Electron root', async () => {
     let calls = 0;
-    const root = { pid: 100, parentPid: 1, name: 'ADHD One.exe', executablePath: 'C:\\ADHD One.exe', created: 'root' };
-    const runtime = { pid: 200, parentPid: 100, name: 'node.exe', executablePath: 'C:\\node.exe', created: 'runtime' };
+    const root = { pid: 100, parentPid: 1, name: 'ADHD One.exe', executablePath: 'C:\\ADHD One.exe', created: '20260815120000.000000+000' };
+    const runtime = { pid: 200, parentPid: 100, name: 'node.exe', executablePath: 'C:\\node.exe', created: '20260815120001.000000+000' };
     const tree = await waitForProcessTree(async () => (++calls === 1 ? [] : [root, runtime]), 100, 200, 1_000, 0);
 
     expect(calls).toBe(2);
@@ -122,8 +122,8 @@ describe('packaged E2E evidence safety', () => {
 
   it('retries a transient Windows process snapshot failure', async () => {
     let calls = 0;
-    const root = { pid: 100, parentPid: 1, name: 'ADHD One.exe', executablePath: 'C:\\ADHD One.exe', created: 'root' };
-    const runtime = { pid: 200, parentPid: 100, name: 'node.exe', executablePath: 'C:\\node.exe', created: 'runtime' };
+    const root = { pid: 100, parentPid: 1, name: 'ADHD One.exe', executablePath: 'C:\\ADHD One.exe', created: '20260815120000.000000+000' };
+    const runtime = { pid: 200, parentPid: 100, name: 'node.exe', executablePath: 'C:\\node.exe', created: '20260815120001.000000+000' };
     const tree = await waitForProcessTree(async () => {
       if (++calls === 1) throw new Error('transient CIM timeout');
       return [root, runtime];
@@ -146,6 +146,16 @@ describe('packaged E2E evidence safety', () => {
       0,
       0
     );
+
+    expect(tree.map(item => item.pid)).toEqual([100, 200]);
+  });
+
+  it.each(['', 'not-a-wmi-date'])('does not attach a child with unprovable CreationDate %j', async created => {
+    const root = { pid: 100, parentPid: 1, created: '20260815120000.000000+000' };
+    const runtime = { pid: 200, parentPid: 100, created: '20260815120001.000000+000' };
+    const unproven = { pid: 300, parentPid: 100, created };
+
+    const tree = await waitForProcessTree(async () => [root, runtime, unproven], 100, 200, 0, 0);
 
     expect(tree.map(item => item.pid)).toEqual([100, 200]);
   });

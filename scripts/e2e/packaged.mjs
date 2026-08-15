@@ -881,9 +881,10 @@ function processTree(processes, rootPid) {
       const childCreatedAt = processCreationTime(item.created);
       // ParentProcessId is only a numeric PID. Windows can retain it on an
       // orphan after that PID has been reused by a later Electron process.
-      // When both identities have timestamps, an older child cannot belong to
-      // the newer parent and must not pull an unrelated system tree into E2E.
-      if (parentCreatedAt !== undefined && childCreatedAt !== undefined && childCreatedAt < parentCreatedAt) continue;
+      // A missing/invalid timestamp cannot prove parentage and must fail
+      // closed. Otherwise a stale orphan can still pull an unrelated system
+      // tree into E2E after its numeric parent PID has been reused.
+      if (parentCreatedAt === undefined || childCreatedAt === undefined || childCreatedAt < parentCreatedAt) continue;
       pending.push(item);
     }
   }

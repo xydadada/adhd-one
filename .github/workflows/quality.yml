@@ -32,7 +32,7 @@ jobs:
             package-lock.json
             runtime/package-lock.json
       - name: actionlint
-        uses: reviewdog/action-actionlint@7d2a9fc6ece53c6e55c4ccda057a7ab9970e5348
+        uses: reviewdog/action-actionlint@237d1fc6f7b995cc26e2eea39405fda029efd33e
         with:
           reporter: github-check
           fail_level: error
